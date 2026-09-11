@@ -155,11 +155,9 @@ class DataStore {
         .order('nomor_absen', { ascending: true });
 
       if (!studentErr && supaStudents) {
-        const supaMap = new Map(supaStudents.map(s => [s.nisn, s]));
-        
-        // Push any local students that don't exist in Supabase yet
-        for (const localSt of this.students) {
-          if (!supaMap.has(localSt.nisn) && localSt.nisn) {
+        // If Supabase is completely empty but we have local students, we upload them (Initial Migration)
+        if (supaStudents.length === 0 && this.students.length > 0) {
+          for (const localSt of this.students) {
             const uuid = (localSt.id && localSt.id.length === 36) ? localSt.id : generateUUID();
             localSt.id = uuid;
             await safeCloud(
@@ -176,37 +174,19 @@ class DataStore {
               })
             );
           }
-        }
-
-        // Fetch complete unified list from Supabase
-        const { data: allSupa, error: allErr } = await supabase
-          .from('students')
-          .select('*')
-          .order('nomor_absen', { ascending: true });
-
-        const finalStudents = (!allErr && allSupa && allSupa.length > 0) ? allSupa : supaStudents;
-
-        if (finalStudents && finalStudents.length > 0) {
-          this.students = finalStudents.map(s => {
-            const backupPhoto = safeStorage.getItem(`pplg3_foto_${s.id}`) || safeStorage.getItem(`pplg3_foto_nisn_${s.nisn}`);
-            return {
-              id: s.id,
-              user_id: s.user_id,
-              nis: s.nis,
-              nisn: s.nisn,
-              nomor_absen: Number(s.nomor_absen) || 1,
-              nama: s.nama,
-              kelas: s.kelas || 'XI PPLG 3',
-              email: s.email,
-              foto_url: s.foto_url || backupPhoto || null,
-              device_token: s.device_token,
-              device_info: s.device_info,
-              status: s.status || 'active',
-              created_at: s.created_at,
-              updated_at: s.updated_at,
-            };
-          });
-          this.saveToStorage(STORAGE_KEYS.STUDENTS, this.students);
+          // After upload, re-fetch to get accurate cloud state
+          const { data: refreshedSupa } = await supabase
+            .from('students')
+            .select('*')
+            .order('nomor_absen', { ascending: true });
+            
+          if (refreshedSupa) {
+            this.updateLocalStudentsFromCloud(refreshedSupa);
+          }
+        } else {
+          // Supabase has data (or both are empty). Supabase is the Source of Truth!
+          // This ensures that if a student was deleted on Supabase, they get deleted locally too.
+          this.updateLocalStudentsFromCloud(supaStudents);
         }
       }
 
@@ -216,7 +196,7 @@ class DataStore {
         .select('*')
         .order('created_at', { ascending: false });
 
-      if (!sesErr && supaSessions && supaSessions.length > 0) {
+      if (!sesErr && supaSessions) {
         this.sessions = supaSessions.map(ses => ({
           id: ses.id,
           nama_sesi: ses.nama_sesi,
@@ -241,7 +221,7 @@ class DataStore {
         .select('*')
         .order('created_at', { ascending: false });
 
-      if (!attErr && supaAtt && supaAtt.length > 0) {
+      if (!attErr && supaAtt) {
         this.attendance = supaAtt.map(a => ({
           id: a.id,
           student_id: a.student_id,
@@ -280,6 +260,29 @@ class DataStore {
     } finally {
       this.isSupabaseSyncing = false;
     }
+  }
+
+  private updateLocalStudentsFromCloud(supaStudents: any[]) {
+    this.students = supaStudents.map(s => {
+      const backupPhoto = safeStorage.getItem(`pplg3_foto_${s.id}`) || safeStorage.getItem(`pplg3_foto_nisn_${s.nisn}`);
+      return {
+        id: s.id,
+        user_id: s.user_id,
+        nis: s.nis,
+        nisn: s.nisn,
+        nomor_absen: Number(s.nomor_absen) || 1,
+        nama: s.nama,
+        kelas: s.kelas || 'XI PPLG 3',
+        email: s.email,
+        foto_url: s.foto_url || backupPhoto || null,
+        device_token: s.device_token,
+        device_info: s.device_info,
+        status: s.status || 'active',
+        created_at: s.created_at,
+        updated_at: s.updated_at,
+      };
+    });
+    this.saveToStorage(STORAGE_KEYS.STUDENTS, this.students);
   }
 
   public reloadAllFromStorage(): void {
