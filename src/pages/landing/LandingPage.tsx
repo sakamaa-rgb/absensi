@@ -28,6 +28,7 @@ export const LandingPage: React.FC = () => {
   const [settings, setSettings] = useState(() => dataStore.getSettings());
 
   useEffect(() => {
+    void dataStore.syncWithSupabase();
     const syncFromStore = () => {
       setStudentsCount(dataStore.getStudents().length);
       setActiveSession(dataStore.getActiveSession());

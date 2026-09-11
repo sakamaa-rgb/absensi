@@ -237,6 +237,18 @@ class DataStore {
         this.saveToStorage(STORAGE_KEYS.ATTENDANCE, this.attendance);
       }
 
+      // 4. Fetch System Settings from Supabase
+      const { data: supaSettings, error: setErr } = await supabase
+        .from('system_settings')
+        .select('*')
+        .eq('key', 'general_settings')
+        .maybeSingle();
+
+      if (!setErr && supaSettings && supaSettings.value) {
+        this.settings = { ...this.settings, ...supaSettings.value };
+        this.saveToStorage(STORAGE_KEYS.SETTINGS, this.settings);
+      }
+
       this.notifySubscribers();
     } catch (e) {
       console.warn('[dataStore] Supabase sync caught:', e);
