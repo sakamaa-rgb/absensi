@@ -42,6 +42,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             }
             return found;
           }
+          if (parsed.studentData) {
+            return parsed.studentData;
+          }
         }
       }
     } catch {
@@ -157,13 +160,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
 
-    // 2. Check for Student Login (Email akun kelas + NISN siswa sebagai password)
-    const foundStudent = dataStore.getStudentByEmail(cleanEmail);
+    // 2. Check for Student Login (Email akun kelas atau NISN + NISN siswa sebagai password)
+    let foundStudent = dataStore.getStudentByEmail(cleanEmail) || dataStore.getStudentByNisn(cleanEmail);
+
+    if (!foundStudent && isSupabaseConfigured) {
+      await dataStore.syncWithSupabase();
+      foundStudent = dataStore.getStudentByEmail(cleanEmail) || dataStore.getStudentByNisn(cleanEmail);
+    }
 
     if (!foundStudent) {
       return { 
         success: false, 
-        message: 'Email siswa tidak terdaftar dalam kelas XI PPLG 3. Pastikan menggunakan email akun kelas kamu.' 
+        message: 'Email atau NISN siswa tidak ditemukan. Pastikan data kamu telah didaftarkan oleh Admin.' 
       };
     }
 
@@ -190,6 +198,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       user: studentUser,
       role: 'student',
       studentId: foundStudent.id,
+      studentData: foundStudent,
     }));
 
     const device = getOrCreateDeviceToken();

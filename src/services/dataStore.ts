@@ -35,16 +35,22 @@ function generateUUID(): string {
   });
 }
 
-// Helper to safely execute Supabase PostgREST promises without type issues
-function safeCloud(builder: any): void {
+// Helper to safely execute Supabase PostgREST promises with detailed error logging
+function safeCloud(builder: any): Promise<any> {
   if (builder && typeof builder.then === 'function') {
-    builder.then(
-      () => {},
+    return builder.then(
+      (res: any) => {
+        if (res && res.error) {
+          console.error('[Supabase Cloud Error]', res.error.message || res.error);
+        }
+        return res;
+      },
       (err: any) => {
-        console.warn('[Supabase Cloud Notice]', err);
+        console.error('[Supabase Cloud Exception]', err);
       }
     );
   }
+  return Promise.resolve();
 }
 
 class DataStore {
@@ -375,6 +381,14 @@ class DataStore {
       }
     }
     return student;
+  }
+
+  public getStudentByNis(nis: string): Student | undefined {
+    return this.students.find(s => s.nis === nis);
+  }
+
+  public getStudentByNisn(nisn: string): Student | undefined {
+    return this.students.find(s => s.nisn === nisn);
   }
 
   public updateStudent(id: string, updates: Partial<Student>): boolean {
@@ -889,11 +903,14 @@ class DataStore {
     this.addLog('ADMIN_SCAN_ATTENDANCE', `Admin / Ketua Kelas scan siswa: ${student.nama} (#${student.nomor_absen}) - Status: ${finalStatus} - Lokasi: ${dist}m`);
 
     if (isSupabaseConfigured) {
+      const validSessionId = session.id.length === 36 ? session.id : 'd8a7c39a-8bd1-4fad-a72f-b2ccdca03b58';
+      const validStudentId = student.id.length === 36 ? student.id : (this.getStudentByNis(student.nis)?.id || student.id);
+
       safeCloud(
-        supabase.from('attendance').insert({
+        supabase.from('attendance').upsert({
           id: uuid,
-          student_id: student.id.length === 36 ? student.id : undefined,
-          session_id: session.id.length === 36 ? session.id : undefined,
+          student_id: validStudentId,
+          session_id: validSessionId,
           tanggal: newRecord.tanggal,
           waktu: newRecord.waktu,
           status: newRecord.status,
@@ -986,11 +1003,18 @@ class DataStore {
     this.addLog('UPDATE_ATTENDANCE_STATUS', `Admin mencatat presensi manual ${student?.nama || studentId}: ${newStatus}`);
 
     if (isSupabaseConfigured) {
+      const validSessionId = sessionId.length === 36 
+        ? sessionId 
+        : (this.getActiveSession()?.id?.length === 36 ? this.getActiveSession()!.id : 'd8a7c39a-8bd1-4fad-a72f-b2ccdca03b58');
+      const validStudentId = studentId.length === 36 
+        ? studentId 
+        : (this.getStudentById(studentId)?.id || studentId);
+
       safeCloud(
-        supabase.from('attendance').insert({
+        supabase.from('attendance').upsert({
           id: uuid,
-          student_id: studentId.length === 36 ? studentId : undefined,
-          session_id: sessionId.length === 36 ? sessionId : undefined,
+          student_id: validStudentId,
+          session_id: validSessionId,
           tanggal: newRec.tanggal,
           waktu: newRec.waktu,
           status: newRec.status,
@@ -1014,6 +1038,11 @@ class DataStore {
     this.saveToStorage(STORAGE_KEYS.SETTINGS, this.settings);
     this.addLog('LOGIN', 'Admin memperbarui pengaturan absensi sekolah');
 
+    const activeSession = this.getActiveSession();
+    if (activeSession && updates.late_threshold_time) {
+      this.updateSession(activeSession.id, { batas_terlambat: updates.late_threshold_time });
+    }
+
     if (isSupabaseConfigured) {
       safeCloud(
         supabase.from('system_settings').upsert({
@@ -1024,6 +1053,7 @@ class DataStore {
       );
     }
 
+    this.notifySubscribers();
     return this.settings;
   }
 }
