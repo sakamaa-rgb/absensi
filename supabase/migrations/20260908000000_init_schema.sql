@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS public.students (
     nama TEXT NOT NULL,
     kelas TEXT NOT NULL DEFAULT 'XI PPLG 3',
     email TEXT UNIQUE NOT NULL,
+    foto_url TEXT,
     device_token TEXT,
     device_info JSONB,
     face_descriptor JSONB,
