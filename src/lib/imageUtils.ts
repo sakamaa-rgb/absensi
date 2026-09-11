@@ -4,8 +4,8 @@
  */
 export async function compressAndCropImage(
   file: File,
-  maxDimension = 400,
-  quality = 0.85
+  maxDimension = 320,
+  quality = 0.82
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();

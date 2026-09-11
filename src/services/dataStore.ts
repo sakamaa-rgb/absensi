@@ -43,7 +43,13 @@ class DataStore {
       this.saveToStorage(STORAGE_KEYS.ATTENDANCE, []);
       this.saveToStorage(STORAGE_KEYS.LOGS, []);
     } else {
-      this.students = storedStudents;
+      this.students = storedStudents.map(s => {
+        if (!s.foto_url) {
+          const backupPhoto = safeStorage.getItem(`pplg3_foto_${s.id}`) || safeStorage.getItem(`pplg3_foto_nisn_${s.nisn}`);
+          if (backupPhoto) return { ...s, foto_url: backupPhoto };
+        }
+        return s;
+      });
       this.attendance = this.loadFromStorage(STORAGE_KEYS.ATTENDANCE, []);
       this.logs = this.loadFromStorage(STORAGE_KEYS.LOGS, []);
     }
@@ -83,7 +89,14 @@ class DataStore {
   }
 
   public reloadAllFromStorage(): void {
-    this.students = this.loadFromStorage<Student[]>(STORAGE_KEYS.STUDENTS, []);
+    const loaded = this.loadFromStorage<Student[]>(STORAGE_KEYS.STUDENTS, []);
+    this.students = loaded.map(s => {
+      if (!s.foto_url) {
+        const backupPhoto = safeStorage.getItem(`pplg3_foto_${s.id}`) || safeStorage.getItem(`pplg3_foto_nisn_${s.nisn}`);
+        if (backupPhoto) return { ...s, foto_url: backupPhoto };
+      }
+      return s;
+    });
     this.attendance = this.loadFromStorage<AttendanceRecord[]>(STORAGE_KEYS.ATTENDANCE, []);
     this.logs = this.loadFromStorage<ActivityLog[]>(STORAGE_KEYS.LOGS, []);
     this.sessions = this.loadFromStorage<AttendanceSession[]>(STORAGE_KEYS.SESSIONS, [INITIAL_SESSION]);
@@ -146,7 +159,7 @@ class DataStore {
       device_info,
       created_at: new Date().toISOString(),
     };
-    this.logs = [newLog, ...this.logs];
+    this.logs = [newLog, ...this.logs].slice(0, 100);
     this.saveToStorage(STORAGE_KEYS.LOGS, this.logs);
   }
 
@@ -160,17 +173,47 @@ class DataStore {
   }
 
   public getStudentById(id: string): Student | undefined {
-    return this.students.find(s => s.id === id);
+    const student = this.students.find(s => s.id === id);
+    if (student && !student.foto_url) {
+      const backupPhoto = safeStorage.getItem(`pplg3_foto_${student.id}`) || safeStorage.getItem(`pplg3_foto_nisn_${student.nisn}`);
+      if (backupPhoto) {
+        student.foto_url = backupPhoto;
+      }
+    }
+    return student;
   }
 
   public getStudentByEmail(email: string): Student | undefined {
-    return this.students.find(s => s.email.toLowerCase() === email.toLowerCase());
+    const student = this.students.find(s => s.email.toLowerCase() === email.toLowerCase());
+    if (student && !student.foto_url) {
+      const backupPhoto = safeStorage.getItem(`pplg3_foto_${student.id}`) || safeStorage.getItem(`pplg3_foto_nisn_${student.nisn}`);
+      if (backupPhoto) {
+        student.foto_url = backupPhoto;
+      }
+    }
+    return student;
   }
 
   public updateStudent(id: string, updates: Partial<Student>): boolean {
     const idx = this.students.findIndex(s => s.id === id);
     if (idx === -1) return false;
     this.students[idx] = { ...this.students[idx], ...updates, updated_at: new Date().toISOString() };
+    
+    // Backup photo to dedicated storage keys to prevent data loss on quota limits
+    if (updates.foto_url !== undefined) {
+      if (updates.foto_url) {
+        safeStorage.setItem(`pplg3_foto_${id}`, updates.foto_url);
+        if (this.students[idx].nisn) {
+          safeStorage.setItem(`pplg3_foto_nisn_${this.students[idx].nisn}`, updates.foto_url);
+        }
+      } else {
+        safeStorage.removeItem(`pplg3_foto_${id}`);
+        if (this.students[idx].nisn) {
+          safeStorage.removeItem(`pplg3_foto_nisn_${this.students[idx].nisn}`);
+        }
+      }
+    }
+
     this.saveToStorage(STORAGE_KEYS.STUDENTS, this.students);
     return true;
   }

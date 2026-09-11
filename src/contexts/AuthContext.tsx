@@ -34,7 +34,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (saved) {
         const parsed = JSON.parse(saved);
         if (parsed.studentId) {
-          return dataStore.getStudentById(parsed.studentId) || null;
+          const found = dataStore.getStudentById(parsed.studentId);
+          if (found) {
+            const photoBackup = parsed.studentPhoto || safeStorage.getItem(`pplg3_foto_${found.id}`) || safeStorage.getItem(`pplg3_foto_nisn_${found.nisn}`);
+            if (!found.foto_url && photoBackup) {
+              found.foto_url = photoBackup;
+            }
+            return found;
+          }
         }
       }
     } catch {
@@ -60,7 +67,44 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (updated) {
         setStudent({ ...updated });
       }
+
+      // 1. Update AUTH_STORAGE_KEY with studentPhoto
+      try {
+        const saved = safeStorage.getItem(AUTH_STORAGE_KEY);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          safeStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({
+            ...parsed,
+            studentPhoto: photoUrl
+          }));
+        }
+      } catch {}
+
+      // 2. Backup to dedicated storage keys
+      if (photoUrl) {
+        safeStorage.setItem(`pplg3_foto_${student.id}`, photoUrl);
+        if (student.nisn) safeStorage.setItem(`pplg3_foto_nisn_${student.nisn}`, photoUrl);
+      } else {
+        safeStorage.removeItem(`pplg3_foto_${student.id}`);
+        if (student.nisn) safeStorage.removeItem(`pplg3_foto_nisn_${student.nisn}`);
+      }
+
       dataStore.addLog('LOGIN', `Siswa ${student.nama} memperbarui foto profil pribadi`);
+
+      // 3. Supabase sync if connected
+      if (isSupabaseConfigured) {
+        try {
+          supabase
+            .from('students')
+            .update({ foto_url: photoUrl })
+            .or(`id.eq.${student.id},nisn.eq.${student.nisn},email.eq.${student.email}`)
+            .then(({ error }) => {
+              if (error) console.warn('Supabase photo sync error:', error);
+            });
+        } catch (e) {
+          console.warn('Supabase sync exception:', e);
+        }
+      }
     }
     return ok;
   };
