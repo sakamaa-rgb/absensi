@@ -155,15 +155,46 @@ class DataStore {
         .order('nomor_absen', { ascending: true });
 
       if (!studentErr && supaStudents) {
-        if (supaStudents.length > 0) {
-          this.students = supaStudents.map(s => {
+        const supaMap = new Map(supaStudents.map(s => [s.nisn, s]));
+        
+        // Push any local students that don't exist in Supabase yet
+        for (const localSt of this.students) {
+          if (!supaMap.has(localSt.nisn) && localSt.nisn) {
+            const uuid = (localSt.id && localSt.id.length === 36) ? localSt.id : generateUUID();
+            localSt.id = uuid;
+            await safeCloud(
+              supabase.from('students').upsert({
+                id: uuid,
+                nama: localSt.nama,
+                nis: localSt.nis,
+                nisn: localSt.nisn,
+                nomor_absen: Number(localSt.nomor_absen) || 1,
+                email: localSt.email,
+                kelas: localSt.kelas || 'XI PPLG 3',
+                status: localSt.status || 'active',
+                foto_url: localSt.foto_url || null,
+              })
+            );
+          }
+        }
+
+        // Fetch complete unified list from Supabase
+        const { data: allSupa, error: allErr } = await supabase
+          .from('students')
+          .select('*')
+          .order('nomor_absen', { ascending: true });
+
+        const finalStudents = (!allErr && allSupa && allSupa.length > 0) ? allSupa : supaStudents;
+
+        if (finalStudents && finalStudents.length > 0) {
+          this.students = finalStudents.map(s => {
             const backupPhoto = safeStorage.getItem(`pplg3_foto_${s.id}`) || safeStorage.getItem(`pplg3_foto_nisn_${s.nisn}`);
             return {
               id: s.id,
               user_id: s.user_id,
               nis: s.nis,
               nisn: s.nisn,
-              nomor_absen: s.nomor_absen,
+              nomor_absen: Number(s.nomor_absen) || 1,
               nama: s.nama,
               kelas: s.kelas || 'XI PPLG 3',
               email: s.email,
@@ -176,23 +207,6 @@ class DataStore {
             };
           });
           this.saveToStorage(STORAGE_KEYS.STUDENTS, this.students);
-        } else if (this.students.length > 0) {
-          // Push local students to Supabase so mobile gets them
-          for (const st of this.students) {
-            safeCloud(
-              supabase.from('students').upsert({
-                id: st.id.length === 36 ? st.id : undefined,
-                nama: st.nama,
-                nis: st.nis,
-                nisn: st.nisn,
-                nomor_absen: st.nomor_absen,
-                email: st.email,
-                kelas: st.kelas,
-                status: st.status || 'active',
-                foto_url: st.foto_url || null,
-              })
-            );
-          }
         }
       }
 
