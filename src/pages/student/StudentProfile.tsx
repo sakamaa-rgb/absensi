@@ -64,17 +64,17 @@ export const StudentProfile: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setShowPhotoModal(true)}
-                className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-blue-50 hover:bg-blue-100/80 text-blue-700 text-xs font-bold border border-blue-200 shadow-2xs transition-all cursor-pointer touch-manipulation"
+                className="flex items-center space-x-1.5 px-3.5 py-2 rounded-xl bg-blue-50 hover:bg-blue-100/80 text-blue-700 text-xs font-bold border border-blue-200 shadow-2xs transition-all cursor-pointer touch-manipulation"
               >
                 <Camera className="w-3.5 h-3.5" />
-                <span>Ubah Foto Profil</span>
+                <span>Upload File Foto (PNG/JPG)</span>
               </button>
             </div>
 
             <p className="text-[11px] text-slate-500 mt-2">
               {student.foto_url 
-                ? 'Foto profil pribadi aktif dan terverifikasi untuk presensi.'
-                : 'Belum ada foto profil. Ketuk tombol untuk mengunggah foto kamu.'}
+                ? 'Foto profil pribadi aktif. Format file PNG/JPG tersimpan aman di profil presensi.'
+                : 'Belum ada foto profil. Unggah file gambar PNG atau JPG langsung dari HP atau laptop kamu.'}
             </p>
           </div>
         </div>
