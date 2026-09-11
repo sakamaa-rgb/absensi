@@ -7,14 +7,25 @@ class SafeStorage {
     try {
       localStorage.setItem(key, value);
     } catch (e: any) {
-      console.warn(`[SafeStorage] localStorage quota exceeded or error for key "${key}":`, e);
+      console.warn(`[SafeStorage] localStorage quota exceeded for key "${key}", purging bloated cache...`, e);
       try {
-        // Try sessionStorage as second layer
-        sessionStorage.setItem(key, value);
-      } catch (sessionErr) {
-        console.warn(`[SafeStorage] sessionStorage also failed, falling back to memory:`, sessionErr);
-        // Fallback to in-memory store
-        this.memoryFallback.set(key, value);
+        // Auto-purge bloated keys (high-res photo backups and bulky logs)
+        const keysToRemove: string[] = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && (k.startsWith('pplg3_foto_') || k === 'pplg3_activity_logs')) {
+            keysToRemove.push(k);
+          }
+        }
+        keysToRemove.forEach(k => localStorage.removeItem(k));
+        localStorage.setItem(key, value);
+      } catch (retryErr) {
+        try {
+          // Try sessionStorage as second layer
+          sessionStorage.setItem(key, value);
+        } catch (sessionErr) {
+          this.memoryFallback.set(key, value);
+        }
       }
     }
   }

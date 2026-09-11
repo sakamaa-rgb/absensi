@@ -119,12 +119,17 @@ class DataStore {
     // 2. Cross-Device Real-Time Sync via Supabase (Windows PC <-> Mobile HP)
     if (isSupabaseConfigured && typeof window !== 'undefined') {
       try {
+        const chanId = 'pplg3_sync_' + Math.random().toString(36).substring(2, 7);
         supabase
-          .channel('pplg3_db_realtime_sync')
+          .channel(chanId)
           .on('postgres_changes', { event: '*', schema: 'public' }, () => {
             void this.syncWithSupabase();
           })
-          .subscribe();
+          .subscribe((status) => {
+            if (status === 'SUBSCRIBED') {
+              console.log('[Supabase Realtime] Terkoneksi aktif pada channel:', chanId);
+            }
+          });
       } catch (e) {
         console.warn('[dataStore] Supabase realtime channel notice:', e);
       }
