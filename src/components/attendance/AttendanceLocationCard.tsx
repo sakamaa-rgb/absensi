@@ -10,7 +10,6 @@ import {
   AlertTriangle,
   X,
   Maximize2,
-  Minimize2,
   Compass,
   Copy,
   Check

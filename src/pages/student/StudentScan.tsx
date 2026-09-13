@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../../contexts/useAuth';
 import { dataStore } from '../../services/dataStore';
 import { calculateHaversineDistance } from '../../lib/location';
@@ -16,7 +16,6 @@ import {
   MapPin, 
   RotateCw, 
   AlertTriangle, 
-  Lock, 
   Sparkles
 } from 'lucide-react';
 
@@ -34,7 +33,7 @@ export const StudentScan: React.FC = () => {
   const [distance, setDistance] = useState<number>(0);
 
   // Dynamic QR Token (Anti-Screenshot / Anti-Titip Absen)
-  const [qrTimestamp, setQrTimestamp] = useState<number>(Date.now());
+  const [qrTimestamp, setQrTimestamp] = useState<number>(() => Date.now());
   const [session, setSession] = useState(() => dataStore.getActiveSession());
   const [settings, setSettings] = useState(() => dataStore.getSettings());
   const tokenDuration = session?.qr_expiry_seconds || settings?.default_qr_expiry_seconds || 30;
@@ -62,7 +61,7 @@ export const StudentScan: React.FC = () => {
   }, [student]);
 
   // Request high-accuracy GPS Geolocation
-  const fetchLocation = () => {
+  const fetchLocation = useCallback(() => {
     setGpsLoading(true);
     setGpsError(null);
 
@@ -104,11 +103,14 @@ export const StudentScan: React.FC = () => {
       },
       { enableHighAccuracy: true, timeout: 8000, maximumAge: 5000 }
     );
-  };
+  }, [schoolLat, schoolLng]);
 
   useEffect(() => {
-    fetchLocation();
-  }, [schoolLat, schoolLng]);
+    const timer = setTimeout(() => {
+      fetchLocation();
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [fetchLocation]);
 
   // Anti-Titip Absen: Auto-refresh dynamic QR token based on settings
   useEffect(() => {
@@ -133,20 +135,12 @@ export const StudentScan: React.FC = () => {
 
   if (!student) return null;
 
-  const isWithinRadius = distance <= maxRadius;
-
-  // The Dynamic Anti-Titip QR Payload
+  // The Dynamic Anti-Titip QR Payload - Compact & ultra-fast for instant camera recognition
   const dynamicQrPayload = JSON.stringify({
-    type: 'STUDENT_LIVE_QR',
-    studentId: student.id,
     nis: student.nis,
-    nama: student.nama,
-    nomor_absen: student.nomor_absen,
-    lat: coords?.latitude ?? schoolLat,
-    lng: coords?.longitude ?? schoolLng,
-    accuracy: coords?.accuracy ?? 5,
-    distance: distance,
-    time: qrTimestamp,
+    t: qrTimestamp,
+    lat: Number((coords?.latitude ?? schoolLat).toFixed(5)),
+    lng: Number((coords?.longitude ?? schoolLng).toFixed(5)),
   });
 
   const toggleFullscreen = () => {
@@ -253,26 +247,21 @@ export const StudentScan: React.FC = () => {
           </div>
         </div>
 
-        {/* The BIG QR Code Canvas with Animated Scanning Line */}
-        <div className="relative p-4 sm:p-5 bg-white rounded-3xl shadow-inner inline-block mx-auto border-3 border-blue-200/80 overflow-hidden">
+        {/* The BIG QR Code Canvas with High Contrast and Clear Margin */}
+        <div className="relative p-2.5 sm:p-3.5 bg-white rounded-3xl shadow-lg inline-block mx-auto border-3 border-blue-500/80 overflow-hidden ring-4 ring-blue-50">
           {/* Subtle 4 Corner Accents */}
-          <div className="absolute top-2 left-2 w-4 h-4 border-t-2 border-l-2 border-blue-500 rounded-tl-sm pointer-events-none" />
-          <div className="absolute top-2 right-2 w-4 h-4 border-t-2 border-r-2 border-blue-500 rounded-tr-sm pointer-events-none" />
-          <div className="absolute bottom-2 left-2 w-4 h-4 border-b-2 border-l-2 border-blue-500 rounded-bl-sm pointer-events-none" />
-          <div className="absolute bottom-2 right-2 w-4 h-4 border-b-2 border-r-2 border-blue-500 rounded-br-sm pointer-events-none" />
+          <div className="absolute top-1.5 left-1.5 w-4 h-4 border-t-2 border-l-2 border-blue-600 rounded-tl-sm pointer-events-none" />
+          <div className="absolute top-1.5 right-1.5 w-4 h-4 border-t-2 border-r-2 border-blue-600 rounded-tr-sm pointer-events-none" />
+          <div className="absolute bottom-1.5 left-1.5 w-4 h-4 border-b-2 border-l-2 border-blue-600 rounded-bl-sm pointer-events-none" />
+          <div className="absolute bottom-1.5 right-1.5 w-4 h-4 border-b-2 border-r-2 border-blue-600 rounded-br-sm pointer-events-none" />
 
           <QRCodeSVG
             id="student-personal-qr"
             value={dynamicQrPayload}
-            size={isFullscreen ? 280 : 215}
-            level="M"
-            includeMargin={false}
+            size={isFullscreen ? 280 : 225}
+            level="L"
+            includeMargin={true}
           />
-
-          {/* Glowing Animated Scanline */}
-          <div className="pointer-events-none absolute inset-x-2 h-0.5 bg-gradient-to-r from-transparent via-blue-500 to-transparent shadow-[0_0_10px_#3b82f6] animate-laser-student">
-            <div className="absolute top-0 inset-x-0 h-10 -translate-y-full bg-gradient-to-t from-blue-500/15 to-transparent pointer-events-none" />
-          </div>
         </div>
 
         {/* Countdown Progress Bar (Auto-refresh) */}

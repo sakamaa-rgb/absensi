@@ -68,6 +68,7 @@ export const AdminStudents: React.FC = () => {
       kelas: 'XI PPLG 3',
       status: 'active',
     });
+    setStudents(dataStore.getStudents());
     setShowAddModal(false);
     resetForm();
     showToast(`Siswa ${formNama} berhasil ditambahkan!`);
@@ -84,6 +85,7 @@ export const AdminStudents: React.FC = () => {
       nomor_absen: Number(formAbsen),
       email: formEmail,
     });
+    setStudents(dataStore.getStudents());
     setShowEditModal(false);
     resetForm();
     showToast(`Data siswa ${formNama} berhasil diperbarui!`);
@@ -181,6 +183,7 @@ export const AdminStudents: React.FC = () => {
 
         let importedCount = 0;
         const importedNames: string[] = [];
+        const studentsToImport: Array<Omit<Student, 'id'>> = [];
 
         rawRows.forEach((rawRow) => {
           // Normalize row keys to lowercase alphanumeric
@@ -267,7 +270,7 @@ export const AdminStudents: React.FC = () => {
             const rawKelas = String(normalized['kelas'] || normalized['rombel'] || '').trim();
             const kelas = rawKelas || 'XI PPLG 3';
 
-            dataStore.addStudent({
+            studentsToImport.push({
               nama,
               nis,
               nisn,
@@ -282,12 +285,15 @@ export const AdminStudents: React.FC = () => {
           }
         });
 
-        if (importedCount === 0) {
+        if (studentsToImport.length === 0) {
           alert('Tidak ada baris data siswa yang terdeteksi. Pastikan file Excel memiliki kolom Nama atau Nama Siswa.');
         } else {
+          dataStore.importStudents(studentsToImport);
           setStudents(dataStore.getStudents());
-          showToast(`Berhasil mengimpor ${importedCount} data siswa!`);
-          alert(`Sukses mengimpor ${importedCount} siswa:\n- ${importedNames.join('\n- ')}`);
+          showToast(`Berhasil mengimpor ${studentsToImport.length} data siswa!`);
+          const previewList = importedNames.slice(0, 8).join('\n- ');
+          const extraCount = importedNames.length > 8 ? `\n... dan ${importedNames.length - 8} siswa lainnya` : '';
+          alert(`Sukses mengimpor ${studentsToImport.length} siswa:\n- ${previewList}${extraCount}`);
         }
       } catch (err: any) {
         alert('Gagal membaca file Excel: ' + err.message);

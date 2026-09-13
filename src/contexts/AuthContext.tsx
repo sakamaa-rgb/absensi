@@ -64,63 +64,73 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const updateStudentPhoto = (photoUrl: string | null): boolean => {
     if (!student) return false;
-    const ok = dataStore.updateStudent(student.id, { foto_url: photoUrl });
-    if (ok) {
-      const updated = dataStore.getStudentById(student.id);
-      if (updated) {
-        setStudent({ ...updated });
-      }
 
-      // 1. Update AUTH_STORAGE_KEY with studentPhoto
+    // 1. Update in dataStore (with fallback identifiers)
+    let ok = dataStore.updateStudent(student.id, { foto_url: photoUrl });
+    if (!ok && student.nisn) {
+      ok = dataStore.updateStudent(student.nisn, { foto_url: photoUrl });
+    }
+    if (!ok && student.nis) {
+      ok = dataStore.updateStudent(student.nis, { foto_url: photoUrl });
+    }
+
+    // 2. Always update local student state so UI updates immediately
+    const updatedStudent: Student = { ...student, foto_url: photoUrl };
+    setStudent(updatedStudent);
+
+    // 3. Update AUTH_STORAGE_KEY with studentPhoto and studentData
+    try {
+      const saved = safeStorage.getItem(AUTH_STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        safeStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({
+          ...parsed,
+          studentPhoto: photoUrl,
+          studentData: updatedStudent,
+        }));
+      }
+    } catch {}
+
+    // 4. Backup to dedicated storage keys
+    if (photoUrl) {
+      safeStorage.setItem(`pplg3_foto_${student.id}`, photoUrl);
+      if (student.nisn) safeStorage.setItem(`pplg3_foto_nisn_${student.nisn}`, photoUrl);
+      if (student.nis) safeStorage.setItem(`pplg3_foto_nis_${student.nis}`, photoUrl);
+    } else {
+      safeStorage.removeItem(`pplg3_foto_${student.id}`);
+      if (student.nisn) safeStorage.removeItem(`pplg3_foto_nisn_${student.nisn}`);
+      if (student.nis) safeStorage.removeItem(`pplg3_foto_nis_${student.nis}`);
+    }
+
+    dataStore.addLog('LOGIN', `Siswa ${student.nama} memperbarui foto profil pribadi`);
+
+    // 5. Supabase sync if connected
+    if (isSupabaseConfigured) {
       try {
-        const saved = safeStorage.getItem(AUTH_STORAGE_KEY);
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          safeStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({
-            ...parsed,
-            studentPhoto: photoUrl
-          }));
-        }
-      } catch {}
-
-      // 2. Backup to dedicated storage keys
-      if (photoUrl) {
-        safeStorage.setItem(`pplg3_foto_${student.id}`, photoUrl);
-        if (student.nisn) safeStorage.setItem(`pplg3_foto_nisn_${student.nisn}`, photoUrl);
-      } else {
-        safeStorage.removeItem(`pplg3_foto_${student.id}`);
-        if (student.nisn) safeStorage.removeItem(`pplg3_foto_nisn_${student.nisn}`);
-      }
-
-      dataStore.addLog('LOGIN', `Siswa ${student.nama} memperbarui foto profil pribadi`);
-
-      // 3. Supabase sync if connected
-      if (isSupabaseConfigured) {
-        try {
-          supabase
-            .from('students')
-            .update({ foto_url: photoUrl })
-            .or(`id.eq.${student.id},nisn.eq.${student.nisn},email.eq.${student.email}`)
-            .then(({ error }) => {
-              if (error) console.warn('Supabase photo sync error:', error);
-            });
-        } catch (e) {
-          console.warn('Supabase sync exception:', e);
-        }
+        supabase
+          .from('students')
+          .update({ foto_url: photoUrl, updated_at: new Date().toISOString() })
+          .or(`id.eq.${student.id},nisn.eq.${student.nisn},email.eq.${student.email}`)
+          .then(({ error }) => {
+            if (error) console.warn('Supabase photo sync error:', error);
+          });
+      } catch (e) {
+        console.warn('Supabase sync exception:', e);
       }
     }
-    return ok;
+
+    return true;
   };
 
   // Auto-sync student updates from dataStore
+  const currentStudentId = student?.id;
   React.useEffect(() => {
+    if (!currentStudentId) return;
     return dataStore.subscribe(() => {
-      if (student) {
-        const updated = dataStore.getStudentById(student.id);
-        if (updated) setStudent({ ...updated });
-      }
+      const updated = dataStore.getStudentById(currentStudentId);
+      if (updated) setStudent({ ...updated });
     });
-  }, [student?.id]);
+  }, [currentStudentId]);
 
   const login = async (email: string, passwordOrNisn: string): Promise<{ success: boolean; message: string }> => {
     const cleanEmail = email.trim().toLowerCase();

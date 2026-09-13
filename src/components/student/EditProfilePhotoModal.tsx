@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef } from 'react';
 import type { Student } from '../../types/database';
 import { compressAndCropImage } from '../../lib/imageUtils';
 import { 
@@ -40,15 +40,20 @@ export const EditProfilePhotoModal: React.FC<EditProfilePhotoModalProps> = ({
   const [successMsg, setSuccessMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
 
-  // Automatically sync previewUrl whenever modal opens or student changes
-  useEffect(() => {
+  // Automatically sync previewUrl whenever modal opens or student changes (Adjust state during render)
+  const [prevIsOpen, setPrevIsOpen] = useState(isOpen);
+  const [prevPhoto, setPrevPhoto] = useState(student.foto_url);
+
+  if (isOpen !== prevIsOpen || student.foto_url !== prevPhoto) {
+    setPrevIsOpen(isOpen);
+    setPrevPhoto(student.foto_url);
     if (isOpen) {
       setPreviewUrl(student.foto_url || null);
       setSelectedFileMeta(null);
       setErrorMsg('');
       setSuccessMsg('');
     }
-  }, [isOpen, student.foto_url]);
+  }
 
   if (!isOpen) return null;
 

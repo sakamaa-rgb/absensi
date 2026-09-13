@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/useAuth';
 import { dataStore } from '../../services/dataStore';
 import { AnimatedBackground } from '../../components/common/AnimatedBackground';
+import { RealtimeConnectionBadge } from '../../components/common/RealtimeConnectionBadge';
 import { 
   LogIn, 
   MapPin, 
@@ -15,14 +16,15 @@ import {
   Users, 
   Sparkles,
   ExternalLink,
-  ChevronRight
+  ChevronRight,
+  ShieldCheck
 } from 'lucide-react';
 
 export const LandingPage: React.FC = () => {
-  const { isAuthenticated, role, user } = useAuth();
+  const { isAuthenticated, role } = useAuth();
   const navigate = useNavigate();
 
-  // Live DataStore connection (Auto-syncs whenever Admin updates anything)
+  // Live DataStore connection (Auto-syncs whenever Admin updates anything on Mobile/PC)
   const [studentsCount, setStudentsCount] = useState(() => dataStore.getStudents().length);
   const [activeSession, setActiveSession] = useState(() => dataStore.getActiveSession());
   const [settings, setSettings] = useState(() => dataStore.getSettings());
@@ -44,6 +46,16 @@ export const LandingPage: React.FC = () => {
   const [dateString, setDateString] = useState('');
   const qrInterval = activeSession?.qr_expiry_seconds || settings?.default_qr_expiry_seconds || 30;
   const [previewSeconds, setPreviewSeconds] = useState(qrInterval);
+
+  // Desktop Special Effect: Interactive Mouse Glow & Cursor Spotlight
+  const [mousePos, setMousePos] = useState<{ x: number; y: number }>({ x: -1000, y: -1000 });
+
+  // Desktop Special Effect: 3D Tilt Card Perspective
+  const [cardTilt, setCardTilt] = useState<{ rotateX: number; rotateY: number }>({ rotateX: 0, rotateY: 0 });
+  const cardRef = useRef<HTMLDivElement>(null);
+
+  // Mobile Special Effect: Touch Ripple Effect
+  const [touchPos, setTouchPos] = useState<{ x: number; y: number; active: boolean }>({ x: 0, y: 0, active: false });
 
   useEffect(() => {
     const updateTime = () => {
@@ -80,6 +92,39 @@ export const LandingPage: React.FC = () => {
     return () => clearInterval(timer);
   }, [qrInterval]);
 
+  const handleMouseMoveGlobal = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    setMousePos({ x: e.clientX, y: e.clientY });
+  }, []);
+
+  const handleCardMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!cardRef.current) return;
+    const rect = cardRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const centerX = rect.width / 2;
+    const centerY = rect.height / 2;
+
+    const rotateX = ((y - centerY) / centerY) * -8;
+    const rotateY = ((x - centerX) / centerX) * 8;
+    setCardTilt({ rotateX, rotateY });
+  };
+
+  const handleCardMouseLeave = () => {
+    setCardTilt({ rotateX: 0, rotateY: 0 });
+  };
+
+  const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (e.touches.length > 0) {
+      setTouchPos({ x: e.touches[0].clientX, y: e.touches[0].clientY, active: true });
+    }
+  };
+
+  const handleTouchEnd = () => {
+    setTimeout(() => {
+      setTouchPos(prev => ({ ...prev, active: false }));
+    }, 400);
+  };
+
   const handleDashboardRedirect = () => {
     if (role === 'admin') {
       navigate('/admin/dashboard');
@@ -89,68 +134,103 @@ export const LandingPage: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen text-slate-800 flex flex-col relative selection:bg-blue-600 selection:text-white">
+    <div 
+      onMouseMove={handleMouseMoveGlobal}
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
+      className="min-h-screen text-slate-800 flex flex-col relative selection:bg-blue-600 selection:text-white overflow-x-hidden"
+    >
       {/* Animated Clean Background */}
       <AnimatedBackground />
 
+      {/* Desktop Special Effect: Interactive Mouse Glow / Cursor Spotlight (Hidden on Mobile) */}
+      <div 
+        className="pointer-events-none fixed inset-0 z-10 transition-opacity duration-300 hidden lg:block"
+        style={{
+          background: `radial-gradient(650px circle at ${mousePos.x}px ${mousePos.y}px, rgba(59, 130, 246, 0.08), transparent 80%)`,
+        }}
+      />
+
+      {/* Mobile Special Effect: Subtle Touch Aura */}
+      {touchPos.active && (
+        <div 
+          className="pointer-events-none fixed z-10 rounded-full bg-blue-500/10 blur-xl transition-all duration-300 lg:hidden"
+          style={{
+            width: 140,
+            height: 140,
+            left: touchPos.x - 70,
+            top: touchPos.y - 70,
+          }}
+        />
+      )}
+
       {/* Top Navbar */}
-      <header className="sticky top-0 z-40 bg-white/80 backdrop-blur-xl border-b border-slate-200/80 transition-all shadow-xs">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
+      <header className="sticky top-0 z-50 bg-white/90 backdrop-blur-xl border-b border-slate-200/80 transition-all shadow-xs">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 sm:h-18 flex items-center justify-between gap-3">
           {/* Logo & School Badge */}
-          <Link to="/" className="flex items-center space-x-3 group">
-            <div className="w-12 h-12 rounded-2xl bg-white p-1 border border-slate-200 shadow-sm group-hover:scale-105 transition-transform overflow-hidden flex items-center justify-center">
+          <Link to="/" className="flex items-center space-x-2.5 sm:space-x-3 group shrink-0">
+            <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-2xl bg-white p-1 border border-slate-200 shadow-xs group-hover:scale-105 transition-transform overflow-hidden flex items-center justify-center shrink-0">
               <img 
                 src="/logo-pplg3.png" 
                 alt="Logo XI PPLG 3" 
                 className="w-full h-full object-contain rounded-xl"
               />
             </div>
-            <div>
+            <div className="flex flex-col justify-center">
               <div className="flex items-center space-x-2">
-                <span className="font-extrabold text-base sm:text-lg text-slate-900 tracking-tight font-heading">
-                  PPLG 3 SMART ATTENDANCE
+                <span className="font-extrabold text-base sm:text-lg text-slate-900 tracking-tight font-heading whitespace-nowrap">
+                  PPLG 3
                 </span>
-                <span className="hidden sm:inline-flex text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200/80">
+                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200/80 whitespace-nowrap">
                   SMKN 1 CIOMAS
                 </span>
               </div>
-              <p className="text-xs text-slate-500 font-medium hidden xs:block">
-                Sistem Absensi Khusus Kelas XI PPLG 3
+              <p className="text-[11px] text-slate-500 font-medium hidden sm:block whitespace-nowrap">
+                Smart Attendance System • XI PPLG 3
               </p>
             </div>
           </Link>
 
           {/* Desktop Nav Links */}
-          <nav className="hidden md:flex items-center space-x-6 text-sm font-semibold text-slate-600">
-            <a href="#features" className="hover:text-blue-600 transition-colors">
+          <nav className="hidden lg:flex items-center space-x-1 text-xs sm:text-sm font-semibold text-slate-600 shrink-0">
+            <a href="#features" className="px-3 py-1.5 rounded-xl hover:text-blue-600 hover:bg-slate-100/80 transition-all">
               Fitur Keamanan
             </a>
-            <a href="#how-it-works" className="hover:text-blue-600 transition-colors">
+            <a href="#how-it-works" className="px-3 py-1.5 rounded-xl hover:text-blue-600 hover:bg-slate-100/80 transition-all">
               Cara Kerja
             </a>
-            <a href="#schedule" className="hover:text-blue-600 transition-colors">
+            <a href="#schedule" className="px-3 py-1.5 rounded-xl hover:text-blue-600 hover:bg-slate-100/80 transition-all">
               Jadwal & Aturan
             </a>
-            <Link to="/verify" className="hover:text-blue-600 transition-colors flex items-center">
-              <span>Cek Bukti Absen</span>
-              <ExternalLink className="w-3 h-3 ml-1 text-slate-400" />
+            <Link to="/verify" className="px-3 py-1.5 rounded-xl hover:text-blue-600 hover:bg-slate-100/80 transition-all inline-flex items-center space-x-1">
+              <span>Cek Bukti</span>
+              <ExternalLink className="w-3.5 h-3.5 text-slate-400" />
             </Link>
           </nav>
 
-          {/* Right Action: Login / Dashboard Button */}
-          <div className="flex items-center space-x-3">
+          {/* Right Action: Status & Login Button */}
+          <div className="flex items-center space-x-2 sm:space-x-3 shrink-0">
+            {/* Subtle Live Realtime Pulse Badge on desktop */}
+            <div className="hidden xl:inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-full bg-emerald-50 border border-emerald-200/80 text-emerald-700 text-[11px] font-semibold">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+              </span>
+              <span>Realtime Aktif</span>
+            </div>
+
             {isAuthenticated ? (
               <button
                 onClick={handleDashboardRedirect}
-                className="inline-flex items-center space-x-2 px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs sm:text-sm font-semibold shadow-md shadow-blue-600/20 hover:shadow-lg hover:shadow-blue-600/30 transition-all cursor-pointer"
+                className="inline-flex items-center space-x-2 px-4 sm:px-5 py-2 sm:py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs sm:text-sm font-semibold shadow-md shadow-blue-600/20 hover:shadow-lg hover:shadow-blue-600/30 transition-all cursor-pointer active:scale-95 whitespace-nowrap"
               >
-                <span>Buka Dashboard ({user?.role === 'admin' ? 'Admin' : 'Siswa'})</span>
+                <span>Dashboard ({role === 'admin' ? 'Admin' : 'Siswa'})</span>
                 <ArrowRight className="w-4 h-4" />
               </button>
             ) : (
               <Link
                 to="/login"
-                className="inline-flex items-center space-x-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-xs sm:text-sm font-semibold shadow-md shadow-blue-600/25 hover:shadow-lg hover:shadow-blue-600/35 transition-all"
+                className="inline-flex items-center space-x-2 px-4 sm:px-5 py-2 sm:py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-xs sm:text-sm font-bold shadow-md shadow-blue-600/25 hover:shadow-lg hover:shadow-blue-600/35 transition-all active:scale-95 whitespace-nowrap"
               >
                 <LogIn className="w-4 h-4" />
                 <span>Masuk / Login</span>
@@ -161,19 +241,19 @@ export const LandingPage: React.FC = () => {
       </header>
 
       {/* Main Content */}
-      <main className="flex-1">
+      <main className="flex-1 pb-24 lg:pb-0">
         {/* Hero Section */}
-        <section className="relative pt-12 pb-20 sm:pt-20 sm:pb-28 overflow-hidden">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-12 lg:gap-8 items-center">
+        <section className="relative pt-8 pb-16 sm:pt-16 sm:pb-24 lg:pt-20 lg:pb-28 overflow-hidden">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-20">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-10 items-center">
               
               {/* Left Column: Heading & CTA */}
-              <div className="lg:col-span-7 space-y-6 text-center lg:text-left">
-                {/* Badge Pill */}
-                <div className="inline-flex items-center space-x-2 px-3.5 py-1.5 rounded-full bg-blue-50/90 border border-blue-200/80 text-blue-700 shadow-xs">
-                  <Sparkles className="w-4 h-4 text-blue-600" />
+              <div className="lg:col-span-7 space-y-5 sm:space-y-6 text-center lg:text-left">
+                {/* Badge Pill with Cross-Device Mesh Indicator */}
+                <div className="inline-flex items-center space-x-2 px-3.5 py-1.5 rounded-full bg-blue-50/90 border border-blue-200/90 text-blue-700 shadow-xs">
+                  <Sparkles className="w-4 h-4 text-blue-600 animate-pulse" />
                   <span className="text-xs font-bold tracking-wide">
-                    Sistem Absensi Digital XI PPLG 3 SMKN 1 Ciomas
+                    Sistem Absensi Digital Terkoneksi Real-Time (Window & Mobile)
                   </span>
                 </div>
 
@@ -185,15 +265,15 @@ export const LandingPage: React.FC = () => {
                   Titip Absen.
                 </h1>
 
-                <p className="text-base sm:text-lg text-slate-600 max-w-2xl mx-auto lg:mx-0 leading-relaxed font-normal">
-                  Platform absensi presisi khusus <strong className="text-slate-800 font-semibold">45 siswa XI PPLG 3</strong> dengan multi-layer validasi: Dynamic QR Code 30 detik, GPS Geofencing radius 100m, Single-Device binding, dan verifikasi real-time server Asia/Jakarta.
+                <p className="text-sm sm:text-base lg:text-lg text-slate-600 max-w-2xl mx-auto lg:mx-0 leading-relaxed font-normal">
+                  Platform presisi khusus <strong className="text-slate-800 font-semibold">45 siswa XI PPLG 3</strong> dengan multi-layer security: Dynamic QR 30 detik, Live GPS adaptif sesuai lokasi siswa, Single-Device binding, dan sinkronisasi real-time instan antar-perangkat PC & HP.
                 </p>
 
                 {/* CTA Buttons */}
-                <div className="pt-2 flex flex-col sm:flex-row items-center justify-center lg:justify-start gap-3.5">
+                <div className="pt-2 flex flex-col sm:flex-row items-center justify-center lg:justify-start gap-3 sm:gap-3.5">
                   <Link
                     to="/login"
-                    className="w-full sm:w-auto inline-flex items-center justify-center space-x-2.5 px-7 py-3.5 rounded-2xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm shadow-xl shadow-blue-600/25 hover:shadow-2xl hover:shadow-blue-600/35 transition-all transform hover:-translate-y-0.5"
+                    className="w-full sm:w-auto inline-flex items-center justify-center space-x-2.5 px-6 sm:px-7 py-3.5 rounded-2xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-bold text-sm shadow-xl shadow-blue-600/25 hover:shadow-2xl hover:shadow-blue-600/35 transition-all transform hover:-translate-y-0.5 active:scale-95"
                   >
                     <span>Mulai Absensi Sekarang</span>
                     <ArrowRight className="w-4 h-4" />
@@ -201,7 +281,7 @@ export const LandingPage: React.FC = () => {
 
                   <a
                     href="#features"
-                    className="w-full sm:w-auto inline-flex items-center justify-center space-x-2 px-6 py-3.5 rounded-2xl bg-white hover:bg-slate-50 text-slate-700 font-semibold text-sm border border-slate-200 shadow-sm hover:shadow transition-all"
+                    className="w-full sm:w-auto inline-flex items-center justify-center space-x-2 px-5 sm:px-6 py-3.5 rounded-2xl bg-white hover:bg-slate-50 text-slate-700 font-semibold text-sm border border-slate-200 shadow-xs hover:shadow transition-all active:scale-95"
                   >
                     <span>Pelajari Sistem Keamanan</span>
                     <ChevronRight className="w-4 h-4 text-slate-400" />
@@ -209,38 +289,50 @@ export const LandingPage: React.FC = () => {
                 </div>
 
                 {/* Key Stats Bar - Dynamically Connected to Admin & School Settings */}
-                <div className="pt-6 grid grid-cols-2 sm:grid-cols-4 gap-3 max-w-xl mx-auto lg:mx-0 text-left">
-                  <div className="p-3 rounded-2xl bg-white/80 border border-slate-200/80 shadow-xs hover-lift">
-                    <p className="text-2xl font-extrabold text-blue-600 font-heading">
+                <div className="pt-4 sm:pt-6 grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3 max-w-xl mx-auto lg:mx-0 text-left">
+                  <div className="p-3 rounded-2xl bg-white/85 border border-slate-200/80 shadow-xs hover-lift transition-transform">
+                    <p className="text-xl sm:text-2xl font-extrabold text-blue-600 font-heading">
                       {studentsCount}
                     </p>
-                    <p className="text-[11px] font-medium text-slate-500">Siswa Terdaftar</p>
+                    <p className="text-[10px] sm:text-[11px] font-medium text-slate-500">Siswa Terdaftar</p>
                   </div>
-                  <div className="p-3 rounded-2xl bg-white/80 border border-slate-200/80 shadow-xs hover-lift">
-                    <p className="text-2xl font-extrabold text-indigo-600 font-heading">
+                  <div className="p-3 rounded-2xl bg-white/85 border border-slate-200/80 shadow-xs hover-lift transition-transform">
+                    <p className="text-xl sm:text-2xl font-extrabold text-indigo-600 font-heading">
                       Live GPS
                     </p>
-                    <p className="text-[11px] font-medium text-slate-500">Koordinat Siswa</p>
+                    <p className="text-[10px] sm:text-[11px] font-medium text-slate-500">Sesuai Posisi Siswa</p>
                   </div>
-                  <div className="p-3 rounded-2xl bg-white/80 border border-slate-200/80 shadow-xs hover-lift">
-                    <p className="text-2xl font-extrabold text-emerald-600 font-heading">
+                  <div className="p-3 rounded-2xl bg-white/85 border border-slate-200/80 shadow-xs hover-lift transition-transform">
+                    <p className="text-xl sm:text-2xl font-extrabold text-emerald-600 font-heading">
                       {qrInterval}s
                     </p>
-                    <p className="text-[11px] font-medium text-slate-500">Dynamic QR</p>
+                    <p className="text-[10px] sm:text-[11px] font-medium text-slate-500">Rotasi Dynamic QR</p>
                   </div>
-                  <div className="p-3 rounded-2xl bg-white/80 border border-slate-200/80 shadow-xs hover-lift">
-                    <p className="text-2xl font-extrabold text-amber-600 font-heading">
+                  <div className="p-3 rounded-2xl bg-white/85 border border-slate-200/80 shadow-xs hover-lift transition-transform">
+                    <p className="text-xl sm:text-2xl font-extrabold text-amber-600 font-heading">
                       {activeSession?.batas_terlambat || settings?.late_threshold_time || '06:45'}
                     </p>
-                    <p className="text-[11px] font-medium text-slate-500">Batas Terlambat</p>
+                    <p className="text-[10px] sm:text-[11px] font-medium text-slate-500">Batas Waktu Masuk</p>
                   </div>
                 </div>
               </div>
 
-              {/* Right Column: Interactive Live Preview Card */}
-              <div className="lg:col-span-5">
-                <div className="glass-card rounded-3xl p-6 sm:p-7 border border-slate-200/90 shadow-2xl relative overflow-hidden bg-white/95 hover-lift">
-                  
+              {/* Right Column: Interactive Live Preview Card with 3D Tilt Effect on Desktop */}
+              <div className="lg:col-span-5 flex justify-center">
+                <div 
+                  ref={cardRef}
+                  onMouseMove={handleCardMouseMove}
+                  onMouseLeave={handleCardMouseLeave}
+                  style={{
+                    transform: `perspective(1000px) rotateX(${cardTilt.rotateX}deg) rotateY(${cardTilt.rotateY}deg)`,
+                    transition: 'transform 0.15s ease-out',
+                  }}
+                  className="w-full max-w-md glass-card rounded-3xl p-5 sm:p-7 border border-slate-200/90 shadow-2xl relative overflow-hidden bg-white/95"
+                >
+                  {/* Subtle Card Ambient Glow */}
+                  <div className="absolute -top-16 -right-16 w-36 h-36 bg-blue-500/10 rounded-full blur-2xl pointer-events-none" />
+                  <div className="absolute -bottom-16 -left-16 w-36 h-36 bg-indigo-500/10 rounded-full blur-2xl pointer-events-none" />
+
                   {/* Card Header with Live Time */}
                   <div className="flex items-center justify-between pb-4 border-b border-slate-100">
                     <div className="flex items-center space-x-2">
@@ -260,18 +352,18 @@ export const LandingPage: React.FC = () => {
                   </div>
 
                   {/* Card Body */}
-                  <div className="py-6 text-center">
+                  <div className="py-5 sm:py-6 text-center">
                     <p className="text-xs font-medium text-slate-400 uppercase tracking-wider">
                       {dateString || 'Hari Ini'}
                     </p>
-                    <h3 className="text-xl font-bold text-slate-900 mt-1 font-heading">
+                    <h3 className="text-lg sm:text-xl font-bold text-slate-900 mt-1 font-heading">
                       XI PPLG 3 • {activeSession?.nama_sesi || 'Sesi Absensi'}
                     </h3>
 
-                    {/* QR Preview Box with Rotating Neon Ring */}
-                    <div className="relative my-5 inline-block p-4 bg-slate-50 rounded-2xl border-2 border-dashed border-blue-300">
-                      <div className="w-40 h-40 bg-white rounded-xl shadow-inner flex flex-col items-center justify-center p-3 border border-slate-200">
-                        <QrCode className="w-28 h-28 text-slate-800" />
+                    {/* QR Preview Box with Pulsing Active Ring */}
+                    <div className="relative my-4 sm:my-5 inline-block p-4 bg-slate-50 rounded-2xl border-2 border-dashed border-blue-300 group">
+                      <div className="w-36 h-36 sm:w-40 sm:h-40 bg-white rounded-xl shadow-inner flex flex-col items-center justify-center p-3 border border-slate-200">
+                        <QrCode className="w-24 h-24 sm:w-28 sm:h-28 text-slate-800 transition-transform group-hover:scale-105" />
                         <span className="text-[10px] font-mono font-bold text-blue-600 mt-1">
                           TOKEN-{previewSeconds}S
                         </span>
@@ -286,32 +378,32 @@ export const LandingPage: React.FC = () => {
                       </div>
                       <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
                         <div 
-                          className="h-full bg-blue-600 rounded-full transition-all duration-1000 ease-linear"
-                          style={{ width: `${(previewSeconds / 30) * 100}%` }}
+                          className="h-full bg-gradient-to-r from-blue-600 to-indigo-600 rounded-full transition-all duration-1000 ease-linear"
+                          style={{ width: `${(previewSeconds / qrInterval) * 100}%` }}
                         />
                       </div>
                     </div>
                   </div>
 
                   {/* Anti-Cheat Badges */}
-                  <div className="pt-4 border-t border-slate-100 grid grid-cols-2 gap-3 text-left">
-                    <div className="p-3 rounded-xl bg-slate-50 border border-slate-200/70 flex items-center space-x-2.5">
-                      <div className="w-8 h-8 rounded-lg bg-blue-100 text-blue-600 flex items-center justify-center shrink-0">
-                        <MapPin className="w-4 h-4" />
+                  <div className="pt-4 border-t border-slate-100 grid grid-cols-2 gap-2.5 sm:gap-3 text-left">
+                    <div className="p-2.5 sm:p-3 rounded-xl bg-slate-50 border border-slate-200/70 flex items-center space-x-2">
+                      <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-blue-100 text-blue-600 flex items-center justify-center shrink-0">
+                        <MapPin className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
                       </div>
-                      <div>
-                        <p className="text-[10px] text-slate-400 font-semibold uppercase">Geofence</p>
-                        <p className="text-xs font-bold text-slate-700">SMKN 1 Ciomas</p>
+                      <div className="min-w-0">
+                        <p className="text-[9px] sm:text-[10px] text-slate-400 font-semibold uppercase">Geofence</p>
+                        <p className="text-[11px] sm:text-xs font-bold text-slate-700 truncate">SMKN 1 Ciomas</p>
                       </div>
                     </div>
 
-                    <div className="p-3 rounded-xl bg-slate-50 border border-slate-200/70 flex items-center space-x-2.5">
-                      <div className="w-8 h-8 rounded-lg bg-indigo-100 text-indigo-600 flex items-center justify-center shrink-0">
-                        <Smartphone className="w-4 h-4" />
+                    <div className="p-2.5 sm:p-3 rounded-xl bg-slate-50 border border-slate-200/70 flex items-center space-x-2">
+                      <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-indigo-100 text-indigo-600 flex items-center justify-center shrink-0">
+                        <Smartphone className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
                       </div>
-                      <div>
-                        <p className="text-[10px] text-slate-400 font-semibold uppercase">Device Binding</p>
-                        <p className="text-xs font-bold text-slate-700">1 HP 1 Siswa</p>
+                      <div className="min-w-0">
+                        <p className="text-[9px] sm:text-[10px] text-slate-400 font-semibold uppercase">Device Binding</p>
+                        <p className="text-[11px] sm:text-xs font-bold text-slate-700 truncate">1 HP 1 Siswa</p>
                       </div>
                     </div>
                   </div>
@@ -324,62 +416,62 @@ export const LandingPage: React.FC = () => {
         </section>
 
         {/* Features Section */}
-        <section id="features" className="py-16 sm:py-24 bg-white/70 border-y border-slate-200/80 relative">
+        <section id="features" className="py-14 sm:py-20 bg-white/70 border-y border-slate-200/80 relative">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="text-center max-w-3xl mx-auto mb-16 space-y-3">
+            <div className="text-center max-w-3xl mx-auto mb-12 sm:mb-16 space-y-3">
               <span className="text-xs font-bold uppercase tracking-wider text-blue-600 bg-blue-50 px-3 py-1 rounded-full border border-blue-200">
                 SISTEM MULTI-LAYER ANTI-CHEAT
               </span>
-              <h2 className="text-3xl sm:text-4xl font-extrabold text-slate-900 font-heading">
+              <h2 className="text-2xl sm:text-4xl font-extrabold text-slate-900 font-heading">
                 Keamanan Maksimal, Kejujuran Terjamin
               </h2>
-              <p className="text-slate-600 text-sm sm:text-base">
+              <p className="text-slate-600 text-xs sm:text-base">
                 Dirancang khusus untuk menghentikan segala modus titip absen secara cerdas dan otomatis.
               </p>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
               {/* Feature 1 */}
-              <div className="p-6 rounded-3xl bg-white border border-slate-200/90 shadow-sm hover:shadow-md transition-shadow">
-                <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center mb-5 border border-blue-100">
-                  <QrCode className="w-6 h-6" />
+              <div className="p-5 sm:p-6 rounded-3xl bg-white border border-slate-200/90 shadow-xs hover:shadow-md transition-shadow hover-lift">
+                <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center mb-4 sm:mb-5 border border-blue-100">
+                  <QrCode className="w-5 h-5 sm:w-6 sm:h-6" />
                 </div>
-                <h3 className="text-lg font-bold text-slate-900 mb-2 font-heading">Dynamic QR Token</h3>
+                <h3 className="text-base sm:text-lg font-bold text-slate-900 mb-2 font-heading">Dynamic QR Token</h3>
                 <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
                   QR proyektor kelas berganti token setiap 30 detik. Tangkapan layar (screenshot) langsung kadaluarsa dan ditolak sistem.
                 </p>
               </div>
 
               {/* Feature 2 */}
-              <div className="p-6 rounded-3xl bg-white border border-slate-200/90 shadow-sm hover:shadow-md transition-shadow">
-                <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center mb-5 border border-emerald-100">
-                  <MapPin className="w-6 h-6" />
+              <div className="p-5 sm:p-6 rounded-3xl bg-white border border-slate-200/90 shadow-xs hover:shadow-md transition-shadow hover-lift">
+                <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center mb-4 sm:mb-5 border border-emerald-100">
+                  <MapPin className="w-5 h-5 sm:w-6 sm:h-6" />
                 </div>
-                <h3 className="text-lg font-bold text-slate-900 mb-2 font-heading">GPS Haversine 100m</h3>
+                <h3 className="text-base sm:text-lg font-bold text-slate-900 mb-2 font-heading">Live GPS Sesuai Lokasi Siswa</h3>
                 <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
-                  Lokasi HP dihitung langsung menggunakan algoritma Haversine ke titik koordinat SMKN 1 Ciomas. Tolak absensi di luar radius.
+                  Sistem secara otomatis mendeteksi, menghitung jarak, dan mencatat koordinat lokasi riil HP siswa saat melakukan absensi secara akurat dan transparan.
                 </p>
               </div>
 
               {/* Feature 3 */}
-              <div className="p-6 rounded-3xl bg-white border border-slate-200/90 shadow-sm hover:shadow-md transition-shadow">
-                <div className="w-12 h-12 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center mb-5 border border-indigo-100">
-                  <Smartphone className="w-6 h-6" />
+              <div className="p-5 sm:p-6 rounded-3xl bg-white border border-slate-200/90 shadow-xs hover:shadow-md transition-shadow hover-lift">
+                <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center mb-4 sm:mb-5 border border-indigo-100">
+                  <Smartphone className="w-5 h-5 sm:w-6 sm:h-6" />
                 </div>
-                <h3 className="text-lg font-bold text-slate-900 mb-2 font-heading">Device Fingerprint</h3>
+                <h3 className="text-base sm:text-lg font-bold text-slate-900 mb-2 font-heading">Device Fingerprint</h3>
                 <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
                   Setiap akun siswa dikunci ke 1 perangkat HP. Tidak bisa menitipkan akun kepada teman sekelas untuk absen.
                 </p>
               </div>
 
               {/* Feature 4 */}
-              <div className="p-6 rounded-3xl bg-white border border-slate-200/90 shadow-sm hover:shadow-md transition-shadow">
-                <div className="w-12 h-12 rounded-2xl bg-purple-50 text-purple-600 flex items-center justify-center mb-5 border border-purple-100">
-                  <Users className="w-6 h-6" />
+              <div className="p-5 sm:p-6 rounded-3xl bg-white border border-slate-200/90 shadow-xs hover:shadow-md transition-shadow hover-lift">
+                <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-2xl bg-purple-50 text-purple-600 flex items-center justify-center mb-4 sm:mb-5 border border-purple-100">
+                  <Users className="w-5 h-5 sm:w-6 sm:h-6" />
                 </div>
-                <h3 className="text-lg font-bold text-slate-900 mb-2 font-heading">Hak Akses Khusus Admin</h3>
+                <h3 className="text-base sm:text-lg font-bold text-slate-900 mb-2 font-heading">Real-Time Sync Panel</h3>
                 <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
-                  Hanya Admin / Ketua Kelas yang memiliki scanner ketua kelas, berwenang mengedit status hadir/sakit/izin, serta export Excel & PDF.
+                  Setiap perubahan oleh Admin di HP langsung tersinkronkan ke layar PC Windows proyektor kelas tanpa jeda reload manual.
                 </p>
               </div>
             </div>
@@ -387,44 +479,44 @@ export const LandingPage: React.FC = () => {
         </section>
 
         {/* How It Works Section */}
-        <section id="how-it-works" className="py-16 sm:py-24">
+        <section id="how-it-works" className="py-14 sm:py-20">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="text-center max-w-3xl mx-auto mb-16 space-y-3">
+            <div className="text-center max-w-3xl mx-auto mb-12 sm:mb-16 space-y-3">
               <span className="text-xs font-bold uppercase tracking-wider text-indigo-600 bg-indigo-50 px-3 py-1 rounded-full border border-indigo-200">
                 ALUR MUDAH & CEPAT
               </span>
-              <h2 className="text-3xl sm:text-4xl font-extrabold text-slate-900 font-heading">
+              <h2 className="text-2xl sm:text-4xl font-extrabold text-slate-900 font-heading">
                 Cara Melakukan Absensi di Kelas
               </h2>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-              <div className="p-6 rounded-3xl bg-white/90 border border-slate-200 shadow-sm relative">
-                <div className="w-10 h-10 rounded-xl bg-blue-600 text-white font-extrabold flex items-center justify-center mb-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 sm:gap-8">
+              <div className="p-6 rounded-3xl bg-white/90 border border-slate-200 shadow-xs relative hover-lift transition-transform">
+                <div className="w-10 h-10 rounded-xl bg-blue-600 text-white font-extrabold flex items-center justify-center mb-4 shadow-sm">
                   1
                 </div>
                 <h3 className="text-base font-bold text-slate-900 mb-2 font-heading">Login Akun Siswa</h3>
-                <p className="text-xs sm:text-sm text-slate-600">
+                <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
                   Masuk menggunakan email akun kelas yang telah terdaftar dan nomor NISN masing-masing sebagai password awal.
                 </p>
               </div>
 
-              <div className="p-6 rounded-3xl bg-white/90 border border-slate-200 shadow-sm relative">
-                <div className="w-10 h-10 rounded-xl bg-indigo-600 text-white font-extrabold flex items-center justify-center mb-4">
+              <div className="p-6 rounded-3xl bg-white/90 border border-slate-200 shadow-xs relative hover-lift transition-transform">
+                <div className="w-10 h-10 rounded-xl bg-indigo-600 text-white font-extrabold flex items-center justify-center mb-4 shadow-sm">
                   2
                 </div>
                 <h3 className="text-base font-bold text-slate-900 mb-2 font-heading">Buka Menu Scan QR</h3>
-                <p className="text-xs sm:text-sm text-slate-600">
+                <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
                   Arahkan kamera HP ke Dynamic QR di layar proyektor kelas atau tunjukkan QR Siswa kepada Ketua Kelas / Admin.
                 </p>
               </div>
 
-              <div className="p-6 rounded-3xl bg-white/90 border border-slate-200 shadow-sm relative">
-                <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white font-extrabold flex items-center justify-center mb-4">
+              <div className="p-6 rounded-3xl bg-white/90 border border-slate-200 shadow-xs relative hover-lift transition-transform">
+                <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white font-extrabold flex items-center justify-center mb-4 shadow-sm">
                   3
                 </div>
                 <h3 className="text-base font-bold text-slate-900 mb-2 font-heading">Terverifikasi & Unduh Slip</h3>
-                <p className="text-xs sm:text-sm text-slate-600">
+                <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
                   Sistem langsung memvalidasi jarak GPS, waktu WIB, dan mengeluarkan Bukti Kehadiran Digital resmi bertanda QR.
                 </p>
               </div>
@@ -433,9 +525,9 @@ export const LandingPage: React.FC = () => {
         </section>
 
         {/* Schedule & Rules Section */}
-        <section id="schedule" className="py-16 sm:py-24 bg-white/70 border-t border-slate-200/80">
+        <section id="schedule" className="py-14 sm:py-20 bg-white/70 border-t border-slate-200/80">
           <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="p-8 sm:p-10 rounded-3xl bg-gradient-to-br from-blue-600 to-indigo-700 text-white shadow-xl">
+            <div className="p-6 sm:p-10 rounded-3xl bg-gradient-to-br from-blue-600 to-indigo-700 text-white shadow-xl">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-center">
                 <div>
                   <span className="text-xs font-bold uppercase tracking-wider text-blue-200 bg-white/15 px-3 py-1 rounded-full">
@@ -450,29 +542,29 @@ export const LandingPage: React.FC = () => {
                   
                   <div className="mt-6 space-y-2.5 text-xs">
                     <div className="flex items-center space-x-2">
-                      <CheckCircle2 className="w-4 h-4 text-emerald-300" />
+                      <CheckCircle2 className="w-4 h-4 text-emerald-300 shrink-0" />
                       <span><strong>Tepat Waktu:</strong> Sebelum pukul 06:45 WIB</span>
                     </div>
                     <div className="flex items-center space-x-2">
-                      <Clock className="w-4 h-4 text-amber-300" />
-                      <span><strong>Terlambat:</strong> Pukul 06:46 WIB ke atas (otomatis tercatat menit terlambat)</span>
+                      <Clock className="w-4 h-4 text-amber-300 shrink-0" />
+                      <span><strong>Terlambat:</strong> Pukul 06:46 WIB ke atas (otomatis tercatat status terlambat)</span>
                     </div>
                     <div className="flex items-center space-x-2">
-                      <FileSpreadsheet className="w-4 h-4 text-sky-300" />
-                      <span><strong>Izin / Sakit:</strong> Hanya dapat disahkan melalui Panel Admin</span>
+                      <FileSpreadsheet className="w-4 h-4 text-sky-300 shrink-0" />
+                      <span><strong>Izin / Sakit:</strong> Pengajuan disahkan langsung melalui Panel Admin</span>
                     </div>
                   </div>
                 </div>
 
-                <div className="bg-white/10 backdrop-blur-md rounded-2xl p-6 border border-white/20 text-center">
+                <div className="bg-white/10 backdrop-blur-md rounded-2xl p-5 sm:p-6 border border-white/20 text-center">
                   <p className="text-xs uppercase font-semibold text-blue-200">Koordinat Resmi Sekolah</p>
-                  <p className="text-lg font-mono font-extrabold text-white mt-1">-6.6025000, 106.7584000</p>
+                  <p className="text-base sm:text-lg font-mono font-extrabold text-white mt-1">-6.6025000, 106.7584000</p>
                   <p className="text-xs text-blue-100 mt-0.5">SMKN 1 Ciomas • Laladon, Kab. Bogor</p>
                   
                   <div className="mt-6 pt-5 border-t border-white/15">
                     <Link
                       to="/login"
-                      className="w-full inline-flex items-center justify-center space-x-2 py-3 px-5 rounded-xl bg-white hover:bg-slate-100 text-blue-700 font-bold text-xs shadow-md transition-colors"
+                      className="w-full inline-flex items-center justify-center space-x-2 py-3 px-5 rounded-xl bg-white hover:bg-slate-100 text-blue-700 font-bold text-xs shadow-md transition-colors active:scale-95"
                     >
                       <LogIn className="w-4 h-4" />
                       <span>Masuk ke Akun Kelas</span>
@@ -485,8 +577,49 @@ export const LandingPage: React.FC = () => {
         </section>
       </main>
 
+      {/* Mobile Special Effect: Floating Quick-Dock Bar (Visible only on Mobile screens < lg) */}
+      <div className="lg:hidden fixed bottom-4 left-4 right-4 z-40">
+        <div className="glass-card bg-white/92 backdrop-blur-xl border border-slate-200/90 shadow-2xl rounded-2xl p-2.5 flex items-center justify-between space-x-2">
+          <div className="flex items-center space-x-2 min-w-0 pl-1">
+            <RealtimeConnectionBadge showText={false} />
+            <div className="min-w-0">
+              <p className="text-xs font-bold text-slate-800 truncate">XI PPLG 3 Presensi</p>
+              <p className="text-[10px] text-slate-500 truncate">{timeString || 'WIB'}</p>
+            </div>
+          </div>
+
+          <div className="flex items-center space-x-1.5 shrink-0">
+            <Link
+              to="/verify"
+              className="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold"
+              title="Cek Bukti Presensi"
+            >
+              <ShieldCheck className="w-4 h-4 text-blue-600" />
+            </Link>
+
+            {isAuthenticated ? (
+              <button
+                onClick={handleDashboardRedirect}
+                className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-xl bg-blue-600 text-white text-xs font-bold shadow-md shadow-blue-600/20 active:scale-95"
+              >
+                <span>Dashboard</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            ) : (
+              <Link
+                to="/login"
+                className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-xs font-bold shadow-md shadow-blue-600/20 active:scale-95"
+              >
+                <LogIn className="w-3.5 h-3.5" />
+                <span>Masuk</span>
+              </Link>
+            )}
+          </div>
+        </div>
+      </div>
+
       {/* Footer */}
-      <footer className="bg-white border-t border-slate-200 py-10">
+      <footer className="bg-white border-t border-slate-200 py-8 sm:py-10">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-500">
           <div className="flex items-center space-x-3">
             <img src="/logo-pplg3.png" alt="Logo XI PPLG 3" className="w-7 h-7 object-contain rounded-md" />

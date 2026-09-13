@@ -15,7 +15,9 @@ import {
   Radio, 
   Maximize2, 
   ArrowRight, 
-  Activity 
+  Activity,
+  CloudUpload,
+  AlertTriangle
 } from 'lucide-react';
 
 
@@ -24,6 +26,8 @@ export const AdminDashboard: React.FC = () => {
   const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
   const [activeSession, setActiveSession] = useState<AttendanceSession | undefined>();
   const [recentLogs, setRecentLogs] = useState(dataStore.getLogs().slice(0, 5));
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<{ success?: boolean; message?: string } | null>(null);
 
   useEffect(() => {
     const refreshData = () => {
@@ -36,6 +40,24 @@ export const AdminDashboard: React.FC = () => {
     refreshData();
     return dataStore.subscribe(refreshData);
   }, []);
+
+  const handleSyncToCloud = async () => {
+    setIsSyncing(true);
+    setSyncStatus(null);
+    const res = await dataStore.pushAllLocalDataToSupabase();
+    setIsSyncing(false);
+    if (res.success) {
+      setSyncStatus({
+        success: true,
+        message: `Berhasil sinkron! ${res.studentsPushed} siswa & ${res.sessionsPushed} sesi tersinkronisasi ke cloud dan siap di HP.`,
+      });
+    } else {
+      setSyncStatus({
+        success: false,
+        message: res.error || 'Gagal sinkron ke database cloud.',
+      });
+    }
+  };
 
   // Compute today's stats
   const today = new Date().toISOString().split('T')[0];
@@ -73,6 +95,16 @@ export const AdminDashboard: React.FC = () => {
 
         {/* Quick Launch Buttons */}
         <div className="flex items-center space-x-2.5">
+          <button
+            onClick={handleSyncToCloud}
+            disabled={isSyncing}
+            className="flex items-center space-x-2 py-2.5 px-3.5 rounded-xl bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold border border-slate-200 shadow-xs transition-all cursor-pointer disabled:opacity-60"
+            title="Sinkronkan data lokal PC ke Supabase Cloud agar otomatis muncul di HP"
+          >
+            <CloudUpload className={`w-4 h-4 text-blue-600 ${isSyncing ? 'animate-bounce' : ''}`} />
+            <span>{isSyncing ? 'Menyinkronkan...' : 'Sinkron ke HP'}</span>
+          </button>
+
           <Link
             to="/admin/scan"
             className="flex items-center space-x-2 py-2.5 px-4 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-xs font-bold shadow-md shadow-blue-500/20 transition-all"
@@ -90,6 +122,36 @@ export const AdminDashboard: React.FC = () => {
           </Link>
         </div>
       </div>
+
+      {/* Cross-Device Sync Notification Banner */}
+      {syncStatus && (
+        <div className={`p-4 rounded-2xl border text-xs sm:text-sm flex items-start space-x-3 shadow-xs transition-all ${
+          syncStatus.success ? 'bg-emerald-50/90 border-emerald-200 text-emerald-800' : 'bg-amber-50/90 border-amber-200 text-amber-900'
+        }`}>
+          {syncStatus.success ? (
+            <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+          ) : (
+            <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+          )}
+          <div className="space-y-1.5 flex-1">
+            <p className="font-bold text-sm">
+              {syncStatus.success ? 'Sinkronisasi Cloud & HP Sukses!' : 'Penyebab HP Belum Terupdate: Izin Database (RLS)'}
+            </p>
+            <p className="text-xs leading-relaxed">{syncStatus.message}</p>
+            {!syncStatus.success && (
+              <p className="text-[11px] text-amber-800 bg-white/70 p-2.5 rounded-xl border border-amber-200/60 leading-relaxed font-mono">
+                Solusi: Buka Supabase Dashboard &gt; SQL Editor, lalu jalankan script dari file: <code>supabase/migrations/20260913_fix_rls_and_realtime.sql</code> agar Supabase mengizinkan sinkronisasi langsung antara PC dan HP.
+              </p>
+            )}
+          </div>
+          <button
+            onClick={() => setSyncStatus(null)}
+            className="text-slate-400 hover:text-slate-600 p-1"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* 45 Students Attendance Metric Cards */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3 sm:gap-4">

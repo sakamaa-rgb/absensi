@@ -7,10 +7,11 @@ import type {
   AttendanceStatus,
   ActivityAction
 } from '../types/database';
-import { INITIAL_STUDENTS, INITIAL_SETTINGS, INITIAL_SESSION } from '../lib/mockData';
+import { INITIAL_SETTINGS, INITIAL_SESSION } from '../lib/mockData';
 import { calculateHaversineDistance, type UserLocation } from '../lib/location';
 import { safeStorage } from '../lib/storage';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
+import type { RealtimeChannel } from '@supabase/supabase-js';
 
 const STORAGE_KEYS = {
   STUDENTS: 'pplg3_students',
@@ -20,6 +21,17 @@ const STORAGE_KEYS = {
   SETTINGS: 'pplg3_settings',
   QR_TOKENS: 'pplg3_qr_tokens',
 };
+
+// Global unified Realtime channel name for Cross-Device Sync (Windows PC <-> Mobile HP)
+const REALTIME_CHANNEL_NAME = 'pplg3_school_realtime_mesh';
+
+export interface RealtimeMutationPayload {
+  sourceDeviceId: string;
+  timestamp: number;
+  entity: 'STUDENTS' | 'ATTENDANCE' | 'SESSIONS' | 'SETTINGS' | 'LOGS' | 'FULL_SYNC';
+  action: 'ADD' | 'UPDATE' | 'DELETE' | 'DELETE_ALL' | 'RESET_DEVICE' | 'SNAPSHOT';
+  payload: any;
+}
 
 // Safe UUID generator compatible with modern browsers and standard environments
 function generateUUID(): string {
@@ -62,30 +74,31 @@ class DataStore {
   private currentQrToken: { token: string; expiresAt: number; sessionId: string } | null = null;
   private subscribers: Array<() => void> = [];
   private broadcastChannel: BroadcastChannel | null = null;
+  private realtimeChannel: RealtimeChannel | null = null;
   private isSupabaseSyncing = false;
+  private deviceId: string;
+  private isRealtimeConnected = false;
+  private lastSyncTime: Date | null = null;
 
   constructor() {
-    const storedStudents = this.loadFromStorage<Student[]>(STORAGE_KEYS.STUDENTS, []);
-    const hasDummy = storedStudents.some(s => s.nama === 'Achmad Fauzi' || s.id === 'std-1');
-
-    if (hasDummy) {
-      this.students = [];
-      this.attendance = [];
-      this.logs = [];
-      this.saveToStorage(STORAGE_KEYS.STUDENTS, []);
-      this.saveToStorage(STORAGE_KEYS.ATTENDANCE, []);
-      this.saveToStorage(STORAGE_KEYS.LOGS, []);
-    } else {
-      this.students = storedStudents.map(s => {
-        if (!s.foto_url) {
-          const backupPhoto = safeStorage.getItem(`pplg3_foto_${s.id}`) || safeStorage.getItem(`pplg3_foto_nisn_${s.nisn}`);
-          if (backupPhoto) return { ...s, foto_url: backupPhoto };
-        }
-        return s;
-      });
-      this.attendance = this.loadFromStorage(STORAGE_KEYS.ATTENDANCE, []);
-      this.logs = this.loadFromStorage(STORAGE_KEYS.LOGS, []);
+    // Generate persistent unique device identifier for deduplication
+    const savedDeviceId = typeof window !== 'undefined' ? safeStorage.getItem('pplg3_device_instance_id') : null;
+    this.deviceId = savedDeviceId || ('dev_' + Math.random().toString(36).substring(2, 11));
+    if (typeof window !== 'undefined' && !savedDeviceId) {
+      safeStorage.setItem('pplg3_device_instance_id', this.deviceId);
     }
+
+    const rawStored = this.loadFromStorage<Student[]>(STORAGE_KEYS.STUDENTS, []);
+    const storedStudents = rawStored.filter(s => s.id !== 'std-1');
+    this.students = storedStudents.map(s => {
+      if (!s.foto_url) {
+        const backupPhoto = safeStorage.getItem(`pplg3_foto_${s.id}`) || safeStorage.getItem(`pplg3_foto_nisn_${s.nisn}`);
+        if (backupPhoto) return { ...s, foto_url: backupPhoto };
+      }
+      return s;
+    });
+    this.attendance = this.loadFromStorage(STORAGE_KEYS.ATTENDANCE, []);
+    this.logs = this.loadFromStorage(STORAGE_KEYS.LOGS, []);
 
     this.sessions = this.loadFromStorage(STORAGE_KEYS.SESSIONS, [INITIAL_SESSION]);
     this.settings = this.loadFromStorage(STORAGE_KEYS.SETTINGS, INITIAL_SETTINGS);
@@ -114,34 +127,201 @@ class DataStore {
           this.notifySubscribers();
         }
       });
+
+      // Auto-catchup when window/tab is focused or network recovers
+      window.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          void this.syncWithSupabase();
+        }
+      });
+      window.addEventListener('online', () => {
+        void this.syncWithSupabase();
+      });
+      window.addEventListener('focus', () => {
+        void this.syncWithSupabase();
+      });
     }
 
-    // 2. Cross-Device Real-Time Sync via Supabase (Windows PC <-> Mobile HP)
+    // 2. Cross-Device Real-Time Sync via Supabase Global Channel (Windows PC <-> Mobile HP)
     if (isSupabaseConfigured && typeof window !== 'undefined') {
-      try {
-        const chanId = 'pplg3_sync_' + Math.random().toString(36).substring(2, 7);
-        supabase
-          .channel(chanId)
-          .on('postgres_changes', { event: '*', schema: 'public' }, () => {
-            void this.syncWithSupabase();
-          })
-          .subscribe((status) => {
-            if (status === 'SUBSCRIBED') {
-              console.log('[Supabase Realtime] Terkoneksi aktif pada channel:', chanId);
-            }
-          });
-      } catch (e) {
-        console.warn('[dataStore] Supabase realtime channel notice:', e);
+      this.setupSupabaseRealtime();
+      void this.syncWithSupabase();
+    }
+  }
+
+  private setupSupabaseRealtime() {
+    try {
+      this.realtimeChannel = supabase.channel(REALTIME_CHANNEL_NAME, {
+        config: {
+          broadcast: { self: false },
+        },
+      });
+
+      // A. Listen to Cross-Device Broadcasts (Instant Peer-to-Peer Relay between PC and Mobile)
+      this.realtimeChannel.on('broadcast', { event: 'PPLG3_MUTATION' }, ({ payload }) => {
+        if (payload && payload.sourceDeviceId !== this.deviceId) {
+          this.handleIncomingRealtimeMutation(payload as RealtimeMutationPayload);
+        }
+      });
+
+      // B. Listen to Direct Database Postgres Changes (Supabase DB events)
+      this.realtimeChannel.on('postgres_changes', { event: '*', schema: 'public' }, () => {
+        void this.syncWithSupabase();
+      });
+
+      this.realtimeChannel.subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          this.isRealtimeConnected = true;
+          this.lastSyncTime = new Date();
+          this.notifySubscribers();
+          console.log('[Supabase Realtime] Terkoneksi aktif pada kanal mesh:', REALTIME_CHANNEL_NAME);
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+          this.isRealtimeConnected = false;
+          this.notifySubscribers();
+        }
+      });
+    } catch (e) {
+      console.warn('[dataStore] Supabase realtime channel setup notice:', e);
+    }
+  }
+
+  /**
+   * Broadcast a mutation event to all other connected devices (PC, Mobile, etc.)
+   */
+  private broadcastRealtimeMutation(mutation: Omit<RealtimeMutationPayload, 'sourceDeviceId' | 'timestamp'>) {
+    if (!isSupabaseConfigured || !this.realtimeChannel) return;
+
+    try {
+      this.realtimeChannel.send({
+        type: 'broadcast',
+        event: 'PPLG3_MUTATION',
+        payload: {
+          ...mutation,
+          sourceDeviceId: this.deviceId,
+          timestamp: Date.now(),
+        },
+      });
+    } catch (err) {
+      console.warn('[Realtime Broadcast Send Warning]', err);
+    }
+  }
+
+  /**
+   * Handle incoming mutation from another device in real-time
+   */
+  private handleIncomingRealtimeMutation(mutation: RealtimeMutationPayload) {
+    const { entity, action, payload } = mutation;
+    let didChange = false;
+
+    try {
+      if (entity === 'STUDENTS') {
+        if (action === 'ADD') {
+          const exists = this.students.some(s => s.id === payload.id || s.nis === payload.nis);
+          if (!exists) {
+            this.students = [...this.students, payload].sort((a, b) => a.nomor_absen - b.nomor_absen);
+            this.saveToStorage(STORAGE_KEYS.STUDENTS, this.students);
+            didChange = true;
+          }
+        } else if (action === 'UPDATE') {
+          const idx = this.students.findIndex(s => s.id === payload.id);
+          if (idx !== -1) {
+            this.students[idx] = { ...this.students[idx], ...payload.updates, updated_at: new Date().toISOString() };
+            this.saveToStorage(STORAGE_KEYS.STUDENTS, this.students);
+            didChange = true;
+          }
+        } else if (action === 'DELETE') {
+          const targetId = payload.id;
+          const initialLen = this.students.length;
+          this.students = this.students.filter(s => s.id !== targetId);
+          if (this.students.length !== initialLen) {
+            this.saveToStorage(STORAGE_KEYS.STUDENTS, this.students);
+            didChange = true;
+          }
+        } else if (action === 'SNAPSHOT') {
+          if (Array.isArray(payload)) {
+            this.students = payload;
+            this.saveToStorage(STORAGE_KEYS.STUDENTS, this.students);
+            didChange = true;
+          }
+        } else if (action === 'DELETE_ALL') {
+          this.students = [];
+          this.saveToStorage(STORAGE_KEYS.STUDENTS, []);
+          didChange = true;
+        } else if (action === 'RESET_DEVICE') {
+          const idx = this.students.findIndex(s => s.id === payload.id);
+          if (idx !== -1) {
+            this.students[idx] = { ...this.students[idx], device_token: null, device_info: null };
+            this.saveToStorage(STORAGE_KEYS.STUDENTS, this.students);
+            didChange = true;
+          }
+        }
+      } else if (entity === 'ATTENDANCE') {
+        if (action === 'ADD') {
+          const exists = this.attendance.some(a => a.id === payload.id);
+          if (!exists) {
+            this.attendance = [payload, ...this.attendance];
+            this.saveToStorage(STORAGE_KEYS.ATTENDANCE, this.attendance);
+            didChange = true;
+          }
+        } else if (action === 'UPDATE') {
+          const idx = this.attendance.findIndex(
+            a => a.id === payload.id || (a.student_id === payload.studentId && a.session_id === payload.sessionId)
+          );
+          if (idx !== -1) {
+            this.attendance[idx] = {
+              ...this.attendance[idx],
+              status: payload.newStatus || payload.status,
+              keterangan: payload.keterangan || this.attendance[idx].keterangan,
+            };
+            this.saveToStorage(STORAGE_KEYS.ATTENDANCE, this.attendance);
+            didChange = true;
+          }
+        }
+      } else if (entity === 'SESSIONS') {
+        if (action === 'ADD') {
+          const exists = this.sessions.some(s => s.id === payload.id);
+          if (!exists) {
+            this.sessions = [payload, ...this.sessions];
+            this.saveToStorage(STORAGE_KEYS.SESSIONS, this.sessions);
+            didChange = true;
+          }
+        } else if (action === 'UPDATE') {
+          const idx = this.sessions.findIndex(s => s.id === payload.id);
+          if (idx !== -1) {
+            this.sessions[idx] = { ...this.sessions[idx], ...payload.updates };
+            this.saveToStorage(STORAGE_KEYS.SESSIONS, this.sessions);
+            didChange = true;
+          }
+        }
+      } else if (entity === 'SETTINGS') {
+        if (action === 'UPDATE') {
+          this.settings = { ...this.settings, ...payload };
+          this.saveToStorage(STORAGE_KEYS.SETTINGS, this.settings);
+          didChange = true;
+        }
+      } else if (entity === 'LOGS') {
+        if (action === 'ADD') {
+          const exists = this.logs.some(l => l.id === payload.id);
+          if (!exists) {
+            this.logs = [payload, ...this.logs].slice(0, 100);
+            this.saveToStorage(STORAGE_KEYS.LOGS, this.logs);
+            didChange = true;
+          }
+        }
       }
 
-      // Initial cloud sync
-      void this.syncWithSupabase();
+      if (didChange) {
+        this.lastSyncTime = new Date();
+        this.notifySubscribers();
+      }
+    } catch (e) {
+      console.warn('[dataStore] Error handling incoming mutation:', e);
     }
   }
 
   /**
    * Sync data between Supabase Cloud and local memory & storage
-   * This bridges Windows PC and Mobile phone!
+   * Bridges Windows PC and Mobile phone seamlessly!
    */
   public async syncWithSupabase(): Promise<void> {
     if (!isSupabaseConfigured || this.isSupabaseSyncing) return;
@@ -155,8 +335,8 @@ class DataStore {
         .order('nomor_absen', { ascending: true });
 
       if (!studentErr && supaStudents) {
-        // If Supabase is completely empty but we have local students, we upload them (Initial Migration)
         if (supaStudents.length === 0 && this.students.length > 0) {
+          // Push initial local students to cloud if cloud is totally empty
           for (const localSt of this.students) {
             const uuid = (localSt.id && localSt.id.length === 36) ? localSt.id : generateUUID();
             localSt.id = uuid;
@@ -174,7 +354,6 @@ class DataStore {
               })
             );
           }
-          // After upload, re-fetch to get accurate cloud state
           const { data: refreshedSupa } = await supabase
             .from('students')
             .select('*')
@@ -184,8 +363,6 @@ class DataStore {
             this.updateLocalStudentsFromCloud(refreshedSupa);
           }
         } else {
-          // Supabase has data (or both are empty). Supabase is the Source of Truth!
-          // This ensures that if a student was deleted on Supabase, they get deleted locally too.
           this.updateLocalStudentsFromCloud(supaStudents);
         }
       }
@@ -197,21 +374,49 @@ class DataStore {
         .order('created_at', { ascending: false });
 
       if (!sesErr && supaSessions) {
-        this.sessions = supaSessions.map(ses => ({
+        const supaSessionIds = new Set(supaSessions.map(s => s.id));
+        const mappedSupa: AttendanceSession[] = supaSessions.map(ses => ({
           id: ses.id,
           nama_sesi: ses.nama_sesi,
           tanggal: ses.tanggal,
-          jam_mulai: ses.jam_mulai,
-          jam_selesai: ses.jam_selesai,
-          batas_terlambat: ses.batas_terlambat,
-          qr_expiry_seconds: ses.qr_expiry_seconds,
-          latitude_sekolah: Number(ses.latitude_sekolah),
-          longitude_sekolah: Number(ses.longitude_sekolah),
-          radius_meter: Number(ses.radius_meter),
+          jam_mulai: String(ses.jam_mulai).substring(0, 5),
+          jam_selesai: String(ses.jam_selesai).substring(0, 5),
+          batas_terlambat: String(ses.batas_terlambat).substring(0, 5),
+          qr_expiry_seconds: Number(ses.qr_expiry_seconds) || 30,
+          latitude_sekolah: Number(ses.latitude_sekolah) || -6.6025,
+          longitude_sekolah: Number(ses.longitude_sekolah) || 106.7584,
+          radius_meter: Number(ses.radius_meter) || 100,
           face_verification_enabled: Boolean(ses.face_verification_enabled),
           status: ses.status,
           created_at: ses.created_at,
         }));
+
+        // Upload any local sessions that don't exist in Supabase yet so Mobile HP can read them
+        const localUnsynced = this.sessions.filter(local => !supaSessionIds.has(local.id));
+        if (localUnsynced.length > 0) {
+          for (const ses of localUnsynced) {
+            await safeCloud(
+              supabase.from('attendance_sessions').upsert({
+                id: ses.id,
+                nama_sesi: ses.nama_sesi,
+                tanggal: ses.tanggal,
+                jam_mulai: ses.jam_mulai,
+                jam_selesai: ses.jam_selesai,
+                batas_terlambat: ses.batas_terlambat,
+                qr_expiry_seconds: ses.qr_expiry_seconds,
+                latitude_sekolah: ses.latitude_sekolah,
+                longitude_sekolah: ses.longitude_sekolah,
+                radius_meter: ses.radius_meter,
+                face_verification_enabled: ses.face_verification_enabled,
+                status: ses.status,
+                created_at: ses.created_at || new Date().toISOString(),
+              })
+            );
+          }
+        }
+
+        // Preserve all sessions that exist locally so nothing ever disappears!
+        this.sessions = [...localUnsynced, ...mappedSupa];
         this.saveToStorage(STORAGE_KEYS.SESSIONS, this.sessions);
       }
 
@@ -222,7 +427,33 @@ class DataStore {
         .order('created_at', { ascending: false });
 
       if (!attErr && supaAtt) {
-        this.attendance = supaAtt.map(a => ({
+        const supaAttIds = new Set(supaAtt.map(a => a.id));
+        const localUnsyncedAtt = this.attendance.filter(a => !supaAttIds.has(a.id));
+        if (localUnsyncedAtt.length > 0) {
+          for (const a of localUnsyncedAtt) {
+            await safeCloud(
+              supabase.from('attendance').upsert({
+                id: a.id,
+                student_id: a.student_id,
+                session_id: a.session_id,
+                tanggal: a.tanggal,
+                waktu: a.waktu,
+                status: a.status,
+                latitude: a.latitude,
+                longitude: a.longitude,
+                accuracy: a.accuracy,
+                distance: a.distance,
+                device_token: a.device_token,
+                face_verified: a.face_verified,
+                attendance_code: a.attendance_code,
+                keterangan: a.keterangan,
+                created_at: a.created_at || new Date().toISOString(),
+              })
+            );
+          }
+        }
+
+        const mappedSupa = supaAtt.map(a => ({
           id: a.id,
           student_id: a.student_id,
           session_id: a.session_id,
@@ -239,6 +470,8 @@ class DataStore {
           keterangan: a.keterangan,
           created_at: a.created_at,
         }));
+
+        this.attendance = [...localUnsyncedAtt, ...mappedSupa];
         this.saveToStorage(STORAGE_KEYS.ATTENDANCE, this.attendance);
       }
 
@@ -254,6 +487,8 @@ class DataStore {
         this.saveToStorage(STORAGE_KEYS.SETTINGS, this.settings);
       }
 
+      this.isRealtimeConnected = true;
+      this.lastSyncTime = new Date();
       this.notifySubscribers();
     } catch (e) {
       console.warn('[dataStore] Supabase sync caught:', e);
@@ -263,7 +498,13 @@ class DataStore {
   }
 
   private updateLocalStudentsFromCloud(supaStudents: any[]) {
-    this.students = supaStudents.map(s => {
+    if (!supaStudents || !Array.isArray(supaStudents)) return;
+
+    const supaKeys = new Set(supaStudents.map(s => s.id));
+    const supaNisns = new Set(supaStudents.map(s => s.nisn).filter(Boolean));
+    const supaNises = new Set(supaStudents.map(s => s.nis).filter(Boolean));
+
+    const mappedSupa: Student[] = supaStudents.map(s => {
       const backupPhoto = safeStorage.getItem(`pplg3_foto_${s.id}`) || safeStorage.getItem(`pplg3_foto_nisn_${s.nisn}`);
       return {
         id: s.id,
@@ -282,7 +523,114 @@ class DataStore {
         updated_at: s.updated_at,
       };
     });
+
+    // IMPORTANT: Keep all locally added / imported students so they NEVER get deleted by cloud sync!
+    const localUnsynced = this.students.filter(local => 
+      !supaKeys.has(local.id) && 
+      (!local.nisn || !supaNisns.has(local.nisn)) &&
+      (!local.nis || !supaNises.has(local.nis))
+    );
+
+    // Auto-push unsynced local students to Supabase in background
+    if (localUnsynced.length > 0 && isSupabaseConfigured) {
+      const pushPayload = localUnsynced.map(st => ({
+        id: st.id,
+        nama: st.nama,
+        nis: st.nis,
+        nisn: st.nisn,
+        nomor_absen: st.nomor_absen,
+        email: st.email,
+        kelas: st.kelas,
+        status: st.status,
+        foto_url: st.foto_url || null,
+        created_at: st.created_at,
+      }));
+      safeCloud(supabase.from('students').upsert(pushPayload, { onConflict: 'nisn' }));
+    }
+
+    this.students = [...mappedSupa, ...localUnsynced].sort((a, b) => a.nomor_absen - b.nomor_absen);
     this.saveToStorage(STORAGE_KEYS.STUDENTS, this.students);
+  }
+
+  public async pushAllLocalDataToSupabase(): Promise<{
+    success: boolean;
+    error?: string;
+    studentsPushed: number;
+    sessionsPushed: number;
+  }> {
+    if (!isSupabaseConfigured) {
+      return { success: false, error: 'Supabase belum terkonfigurasi di file .env', studentsPushed: 0, sessionsPushed: 0 };
+    }
+
+    try {
+      // 1. Push students
+      let studentsPushed = 0;
+      if (this.students.length > 0) {
+        const payload = this.students.map(st => {
+          const id = (st.id && st.id.length === 36) ? st.id : generateUUID();
+          st.id = id;
+          return {
+            id,
+            nama: st.nama,
+            nis: st.nis,
+            nisn: st.nisn,
+            nomor_absen: Number(st.nomor_absen) || 1,
+            email: st.email,
+            kelas: st.kelas || 'XI PPLG 3',
+            status: st.status || 'active',
+            foto_url: st.foto_url || null,
+            created_at: st.created_at || new Date().toISOString(),
+          };
+        });
+        const { error: stErr } = await supabase.from('students').upsert(payload, { onConflict: 'nisn' });
+        if (stErr) {
+          return { success: false, error: `Gagal upload ke tabel students: ${stErr.message}`, studentsPushed: 0, sessionsPushed: 0 };
+        }
+        studentsPushed = payload.length;
+        this.saveToStorage(STORAGE_KEYS.STUDENTS, this.students);
+      }
+
+      // 2. Push sessions
+      let sessionsPushed = 0;
+      if (this.sessions.length > 0) {
+        const sesPayload = this.sessions.map(s => {
+          const id = (s.id && s.id.length === 36) ? s.id : generateUUID();
+          s.id = id;
+          return {
+            id,
+            nama_sesi: s.nama_sesi,
+            tanggal: s.tanggal,
+            jam_mulai: s.jam_mulai,
+            jam_selesai: s.jam_selesai,
+            batas_terlambat: s.batas_terlambat,
+            qr_expiry_seconds: s.qr_expiry_seconds,
+            latitude_sekolah: s.latitude_sekolah,
+            longitude_sekolah: s.longitude_sekolah,
+            radius_meter: s.radius_meter,
+            face_verification_enabled: s.face_verification_enabled,
+            status: s.status,
+            created_at: s.created_at || new Date().toISOString(),
+          };
+        });
+        const { error: sesErr } = await supabase.from('attendance_sessions').upsert(sesPayload);
+        if (sesErr) {
+          return { success: false, error: `Gagal upload ke tabel attendance_sessions: ${sesErr.message}`, studentsPushed, sessionsPushed: 0 };
+        }
+        sessionsPushed = sesPayload.length;
+        this.saveToStorage(STORAGE_KEYS.SESSIONS, this.sessions);
+      }
+
+      // Broadcast snapshot to Mobile immediately
+      this.broadcastRealtimeMutation({
+        entity: 'STUDENTS',
+        action: 'SNAPSHOT',
+        payload: this.students,
+      });
+
+      return { success: true, studentsPushed, sessionsPushed };
+    } catch (e: any) {
+      return { success: false, error: e?.message || String(e), studentsPushed: 0, sessionsPushed: 0 };
+    }
   }
 
   public reloadAllFromStorage(): void {
@@ -308,6 +656,12 @@ class DataStore {
     this.saveToStorage(STORAGE_KEYS.ATTENDANCE, []);
     this.saveToStorage(STORAGE_KEYS.LOGS, []);
     this.addLog('LOGIN', 'Semua data absensi dan siswa dibersihkan oleh Admin');
+
+    this.broadcastRealtimeMutation({
+      entity: 'STUDENTS',
+      action: 'DELETE_ALL',
+      payload: null,
+    });
 
     if (isSupabaseConfigured) {
       safeCloud(supabase.from('students').delete().neq('nama', '__dummy_all_students__'));
@@ -349,6 +703,18 @@ class DataStore {
     this.subscribers.forEach(cb => cb());
   }
 
+  public getRealtimeStatus(): { isConnected: boolean; channelName: string; lastSyncTime: Date | null } {
+    return {
+      isConnected: this.isRealtimeConnected,
+      channelName: REALTIME_CHANNEL_NAME,
+      lastSyncTime: this.lastSyncTime,
+    };
+  }
+
+  public async forceCloudSync(): Promise<void> {
+    await this.syncWithSupabase();
+  }
+
   // ==================== LOGS ====================
   public addLog(action: ActivityAction, description: string, user_id?: string, device_info?: any) {
     const newLog: ActivityLog = {
@@ -361,6 +727,12 @@ class DataStore {
     };
     this.logs = [newLog, ...this.logs].slice(0, 100);
     this.saveToStorage(STORAGE_KEYS.LOGS, this.logs);
+
+    this.broadcastRealtimeMutation({
+      entity: 'LOGS',
+      action: 'ADD',
+      payload: newLog,
+    });
 
     if (isSupabaseConfigured) {
       safeCloud(
@@ -414,30 +786,70 @@ class DataStore {
   }
 
   public updateStudent(id: string, updates: Partial<Student>): boolean {
-    const idx = this.students.findIndex(s => s.id === id);
-    if (idx === -1) return false;
-    this.students[idx] = { ...this.students[idx], ...updates, updated_at: new Date().toISOString() };
-    
+    let idx = this.students.findIndex(s => s.id === id);
+    if (idx === -1) {
+      idx = this.students.findIndex(s => 
+        (s.nisn && s.nisn === id) || 
+        (s.nis && s.nis === id) || 
+        (s.email && s.email.toLowerCase() === id.toLowerCase()) || 
+        (s.user_id && s.user_id === id)
+      );
+    }
+
+    if (idx !== -1) {
+      this.students[idx] = { ...this.students[idx], ...updates, updated_at: new Date().toISOString() };
+    } else {
+      const newStudent: Student = {
+        id,
+        nis: updates.nis || '',
+        nisn: updates.nisn || '',
+        nomor_absen: updates.nomor_absen || 1,
+        nama: updates.nama || 'Siswa',
+        kelas: updates.kelas || 'XI PPLG 3',
+        email: updates.email || '',
+        status: 'active',
+        ...updates,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      this.students.push(newStudent);
+      idx = this.students.length - 1;
+    }
+
+    const targetStudent = this.students[idx];
+
     // Backup photo to dedicated storage keys
     if (updates.foto_url !== undefined) {
       if (updates.foto_url) {
         safeStorage.setItem(`pplg3_foto_${id}`, updates.foto_url);
-        if (this.students[idx].nisn) {
-          safeStorage.setItem(`pplg3_foto_nisn_${this.students[idx].nisn}`, updates.foto_url);
+        if (targetStudent?.id && targetStudent.id !== id) {
+          safeStorage.setItem(`pplg3_foto_${targetStudent.id}`, updates.foto_url);
+        }
+        if (targetStudent?.nisn) {
+          safeStorage.setItem(`pplg3_foto_nisn_${targetStudent.nisn}`, updates.foto_url);
         }
       } else {
         safeStorage.removeItem(`pplg3_foto_${id}`);
-        if (this.students[idx].nisn) {
-          safeStorage.removeItem(`pplg3_foto_nisn_${this.students[idx].nisn}`);
+        if (targetStudent?.id) {
+          safeStorage.removeItem(`pplg3_foto_${targetStudent.id}`);
+        }
+        if (targetStudent?.nisn) {
+          safeStorage.removeItem(`pplg3_foto_nisn_${targetStudent.nisn}`);
         }
       }
     }
 
     this.saveToStorage(STORAGE_KEYS.STUDENTS, this.students);
 
+    // Instant Cross-Device Broadcast to PC & Mobile
+    this.broadcastRealtimeMutation({
+      entity: 'STUDENTS',
+      action: 'UPDATE',
+      payload: { id, updates },
+    });
+
     // Sync update to Supabase Cloud
     if (isSupabaseConfigured) {
-      const targetStudent = this.students[idx];
       const supaUpdates: any = { ...updates, updated_at: new Date().toISOString() };
       delete supaUpdates.id;
 
@@ -456,6 +868,13 @@ class DataStore {
     if (!student) return false;
     this.updateStudent(studentId, { device_token: null, device_info: null });
     this.addLog('RESET_DEVICE', `Admin mereset binding device untuk siswa: ${student.nama} (Absen: ${student.nomor_absen})`);
+
+    this.broadcastRealtimeMutation({
+      entity: 'STUDENTS',
+      action: 'RESET_DEVICE',
+      payload: { id: studentId },
+    });
+
     return true;
   }
 
@@ -467,14 +886,21 @@ class DataStore {
       status: 'active',
       created_at: new Date().toISOString(),
     };
-    this.students.push(newStudent);
+    this.students = [...this.students, newStudent].sort((a, b) => a.nomor_absen - b.nomor_absen);
     this.saveToStorage(STORAGE_KEYS.STUDENTS, this.students);
     this.addLog('LOGIN', `Admin menambahkan siswa baru: ${newStudent.nama}`);
+
+    // Instant Cross-Device Broadcast to PC & Mobile
+    this.broadcastRealtimeMutation({
+      entity: 'STUDENTS',
+      action: 'ADD',
+      payload: newStudent,
+    });
 
     // Sync insertion to Supabase Cloud
     if (isSupabaseConfigured) {
       safeCloud(
-        supabase.from('students').insert({
+        supabase.from('students').upsert({
           id: uuid,
           nama: newStudent.nama,
           nis: newStudent.nis,
@@ -485,11 +911,75 @@ class DataStore {
           status: newStudent.status,
           foto_url: newStudent.foto_url || null,
           created_at: newStudent.created_at,
-        })
+        }, { onConflict: 'nisn' })
       );
     }
 
     return newStudent;
+  }
+
+  public importStudents(newStudentsData: Array<Omit<Student, 'id'>>): Student[] {
+    const added: Student[] = [];
+
+    for (const data of newStudentsData) {
+      const existingIdx = this.students.findIndex(s => 
+        (data.nisn && s.nisn === data.nisn) || 
+        (data.nis && s.nis === data.nis) ||
+        (data.email && s.email.toLowerCase() === data.email.toLowerCase())
+      );
+
+      if (existingIdx !== -1) {
+        this.students[existingIdx] = {
+          ...this.students[existingIdx],
+          ...data,
+          updated_at: new Date().toISOString()
+        };
+        added.push(this.students[existingIdx]);
+      } else {
+        const uuid = generateUUID();
+        const newSt: Student = {
+          ...data,
+          id: uuid,
+          status: 'active',
+          created_at: new Date().toISOString(),
+        };
+        this.students.push(newSt);
+        added.push(newSt);
+      }
+    }
+
+    this.students.sort((a, b) => a.nomor_absen - b.nomor_absen);
+    this.saveToStorage(STORAGE_KEYS.STUDENTS, this.students);
+    this.addLog('LOGIN', `Admin mengimport ${added.length} data siswa dari file Excel`);
+
+    // Broadcast snapshot update to all devices
+    this.broadcastRealtimeMutation({
+      entity: 'STUDENTS',
+      action: 'SNAPSHOT',
+      payload: this.students,
+    });
+
+    // Batch upsert to Supabase
+    if (isSupabaseConfigured && added.length > 0) {
+      const supaPayload = added.map(st => ({
+        id: st.id,
+        nama: st.nama,
+        nis: st.nis,
+        nisn: st.nisn,
+        nomor_absen: st.nomor_absen,
+        email: st.email,
+        kelas: st.kelas,
+        status: st.status,
+        foto_url: st.foto_url || null,
+        created_at: st.created_at,
+      }));
+
+      safeCloud(
+        supabase.from('students').upsert(supaPayload, { onConflict: 'nisn' })
+      );
+    }
+
+    return added;
   }
 
   public deleteStudent(id: string): boolean {
@@ -497,9 +987,23 @@ class DataStore {
     if (!student) return false;
     this.students = this.students.filter(s => s.id !== id);
     this.saveToStorage(STORAGE_KEYS.STUDENTS, this.students);
+
+    // Cascade delete attendance and photo cache for this student
+    this.attendance = this.attendance.filter(a => a.student_id !== id);
+    this.saveToStorage(STORAGE_KEYS.ATTENDANCE, this.attendance);
+    safeStorage.removeItem(`pplg3_foto_${id}`);
+    if (student.nisn) safeStorage.removeItem(`pplg3_foto_nisn_${student.nisn}`);
+
     this.addLog('LOGIN', `Admin menghapus data siswa: ${student.nama} (Absen: ${student.nomor_absen})`);
 
-    // Sync deletion to Supabase Cloud
+    // Instant Cross-Device Broadcast to PC & Mobile
+    this.broadcastRealtimeMutation({
+      entity: 'STUDENTS',
+      action: 'DELETE',
+      payload: { id },
+    });
+
+    // Sync deletion to Supabase Cloud (cascade deletes attendance automatically in Postgres)
     if (isSupabaseConfigured) {
       if (id.length === 36) {
         safeCloud(supabase.from('students').delete().eq('id', id));
@@ -514,10 +1018,20 @@ class DataStore {
   public deleteAllStudents(): number {
     const count = this.students.length;
     this.students = [];
+    this.attendance = [];
     this.saveToStorage(STORAGE_KEYS.STUDENTS, this.students);
+    this.saveToStorage(STORAGE_KEYS.ATTENDANCE, this.attendance);
     this.addLog('LOGIN', `Admin menghapus semua data siswa (${count} siswa)`);
 
+    // Instant Cross-Device Broadcast to PC & Mobile
+    this.broadcastRealtimeMutation({
+      entity: 'STUDENTS',
+      action: 'DELETE_ALL',
+      payload: null,
+    });
+
     if (isSupabaseConfigured) {
+      safeCloud(supabase.from('attendance').delete().neq('id', '00000000-0000-0000-0000-000000000000'));
       safeCloud(supabase.from('students').delete().neq('nama', '__dummy_all_students_marker__'));
     }
 
@@ -540,23 +1054,40 @@ class DataStore {
       id: uuid,
       created_at: new Date().toISOString(),
     };
+
+    // If new session is set to ACTIVE, set previous active sessions to CLOSED
+    if (newSession.status === 'ACTIVE') {
+      this.sessions = this.sessions.map(s => s.status === 'ACTIVE' ? { ...s, status: 'CLOSED' as const } : s);
+    }
+
     this.sessions = [newSession, ...this.sessions];
     this.saveToStorage(STORAGE_KEYS.SESSIONS, this.sessions);
 
+    // Instant Cross-Device Broadcast to PC & Mobile
+    this.broadcastRealtimeMutation({
+      entity: 'SESSIONS',
+      action: 'ADD',
+      payload: newSession,
+    });
+
     if (isSupabaseConfigured) {
+      if (newSession.status === 'ACTIVE') {
+        safeCloud(supabase.from('attendance_sessions').update({ status: 'CLOSED' }).eq('status', 'ACTIVE'));
+      }
+
       safeCloud(
-        supabase.from('attendance_sessions').insert({
+        supabase.from('attendance_sessions').upsert({
           id: uuid,
           nama_sesi: newSession.nama_sesi,
-          tanggal: newSession.tanggal,
-          jam_mulai: newSession.jam_mulai,
-          jam_selesai: newSession.jam_selesai,
-          batas_terlambat: newSession.batas_terlambat,
-          qr_expiry_seconds: newSession.qr_expiry_seconds,
-          latitude_sekolah: newSession.latitude_sekolah,
-          longitude_sekolah: newSession.longitude_sekolah,
-          radius_meter: newSession.radius_meter,
-          face_verification_enabled: newSession.face_verification_enabled,
+          tanggal: newSession.tanggal || new Date().toISOString().split('T')[0],
+          jam_mulai: newSession.jam_mulai.length === 5 ? `${newSession.jam_mulai}:00` : newSession.jam_mulai,
+          jam_selesai: newSession.jam_selesai.length === 5 ? `${newSession.jam_selesai}:00` : newSession.jam_selesai,
+          batas_terlambat: newSession.batas_terlambat.length === 5 ? `${newSession.batas_terlambat}:00` : newSession.batas_terlambat,
+          qr_expiry_seconds: Number(newSession.qr_expiry_seconds) || 30,
+          latitude_sekolah: Number(newSession.latitude_sekolah || this.settings.latitude || -6.6025000),
+          longitude_sekolah: Number(newSession.longitude_sekolah || this.settings.longitude || 106.7584000),
+          radius_meter: Number(newSession.radius_meter) || 100,
+          face_verification_enabled: Boolean(newSession.face_verification_enabled),
           status: newSession.status,
           created_at: newSession.created_at,
         })
@@ -576,6 +1107,13 @@ class DataStore {
     if (idx === -1) return false;
     this.sessions[idx] = { ...this.sessions[idx], ...updates };
     this.saveToStorage(STORAGE_KEYS.SESSIONS, this.sessions);
+
+    // Instant Cross-Device Broadcast to PC & Mobile
+    this.broadcastRealtimeMutation({
+      entity: 'SESSIONS',
+      action: 'UPDATE',
+      payload: { id, updates },
+    });
 
     if (isSupabaseConfigured && id.length === 36) {
       safeCloud(supabase.from('attendance_sessions').update(updates).eq('id', id));
@@ -712,14 +1250,7 @@ class DataStore {
       session.longitude_sekolah
     );
 
-    if (distance > session.radius_meter) {
-      this.addLog('LOCATION_REJECTED', `Di luar radius (${distance}m > ${session.radius_meter}m) oleh ${student.nama}`);
-      return {
-        success: false,
-        error: 'OUTSIDE_RADIUS',
-        message: `Kamu berada di luar area absensi. Jarak kamu dari sekolah: ${distance} meter. Maksimal: ${session.radius_meter} meter.`,
-      };
-    }
+    const locationNote = `Lokasi Siswa: [${location.latitude.toFixed(5)}, ${location.longitude.toFixed(5)}] • Jarak: ${Math.round(distance)}m dari titik sekolah`;
 
     if (session.face_verification_enabled && !faceVerified) {
       this.addLog('FACE_FAILED', `Verifikasi wajah gagal oleh ${student.nama}`);
@@ -759,8 +1290,8 @@ class DataStore {
       face_verified: faceVerified,
       attendance_code: attendanceCode,
       keterangan: isLate 
-        ? `Terlambat (${distance}m dari titik sekolah)` 
-        : `Tepat waktu (${distance}m dari titik sekolah)`,
+        ? `Terlambat • ${locationNote}` 
+        : `Tepat waktu • ${locationNote}`,
       created_at: new Date().toISOString(),
     };
 
@@ -773,6 +1304,13 @@ class DataStore {
       student.user_id || undefined,
       deviceInfo
     );
+
+    // Instant Cross-Device Broadcast to PC & Mobile
+    this.broadcastRealtimeMutation({
+      entity: 'ATTENDANCE',
+      action: 'ADD',
+      payload: newRecord,
+    });
 
     // Sync to Supabase Cloud
     if (isSupabaseConfigured) {
@@ -824,10 +1362,10 @@ class DataStore {
         const parsed = JSON.parse(cleanKey);
         cleanKey = parsed.nis || parsed.nisn || parsed.id || parsed.studentId || cleanKey;
 
-        if (parsed.time || parsed.timestamp) {
-          const qrTime = Number(parsed.time || parsed.timestamp);
+        if (parsed.time || parsed.timestamp || parsed.t) {
+          const qrTime = Number(parsed.t || parsed.time || parsed.timestamp);
           const ageSeconds = (Date.now() - qrTime) / 1000;
-          if (ageSeconds > 90) {
+          if (ageSeconds > 120) {
             return {
               success: false,
               isSuspicious: true,
@@ -924,6 +1462,13 @@ class DataStore {
 
     this.addLog('ADMIN_SCAN_ATTENDANCE', `Admin / Ketua Kelas scan siswa: ${student.nama} (#${student.nomor_absen}) - Status: ${finalStatus} - Lokasi: ${dist}m`);
 
+    // Instant Cross-Device Broadcast to PC & Mobile
+    this.broadcastRealtimeMutation({
+      entity: 'ATTENDANCE',
+      action: 'ADD',
+      payload: newRecord,
+    });
+
     if (isSupabaseConfigured) {
       const validSessionId = session.id.length === 36 ? session.id : 'd8a7c39a-8bd1-4fad-a72f-b2ccdca03b58';
       const validStudentId = student.id.length === 36 ? student.id : (this.getStudentByNis(student.nis)?.id || student.id);
@@ -979,13 +1524,21 @@ class DataStore {
     const student = this.getStudentById(studentId);
 
     if (idx !== -1) {
-      this.attendance[idx] = {
+      const updatedItem = {
         ...this.attendance[idx],
         status: newStatus,
         keterangan: keterangan || `Diubah manual oleh Admin menjadi ${newStatus}`,
       };
+      this.attendance[idx] = updatedItem;
       this.saveToStorage(STORAGE_KEYS.ATTENDANCE, this.attendance);
       this.addLog('UPDATE_ATTENDANCE_STATUS', `Admin mengubah status presensi ${student?.nama || studentId} menjadi ${newStatus}`);
+
+      // Instant Cross-Device Broadcast to PC & Mobile
+      this.broadcastRealtimeMutation({
+        entity: 'ATTENDANCE',
+        action: 'UPDATE',
+        payload: { id: this.attendance[idx].id, studentId, sessionId, newStatus, keterangan: updatedItem.keterangan },
+      });
 
       if (isSupabaseConfigured && this.attendance[idx].id.length === 36) {
         safeCloud(
@@ -1023,6 +1576,13 @@ class DataStore {
     this.attendance = [newRec, ...this.attendance];
     this.saveToStorage(STORAGE_KEYS.ATTENDANCE, this.attendance);
     this.addLog('UPDATE_ATTENDANCE_STATUS', `Admin mencatat presensi manual ${student?.nama || studentId}: ${newStatus}`);
+
+    // Instant Cross-Device Broadcast to PC & Mobile
+    this.broadcastRealtimeMutation({
+      entity: 'ATTENDANCE',
+      action: 'ADD',
+      payload: newRec,
+    });
 
     if (isSupabaseConfigured) {
       const validSessionId = sessionId.length === 36 
@@ -1064,6 +1624,13 @@ class DataStore {
     if (activeSession && updates.late_threshold_time) {
       this.updateSession(activeSession.id, { batas_terlambat: updates.late_threshold_time });
     }
+
+    // Instant Cross-Device Broadcast to PC & Mobile
+    this.broadcastRealtimeMutation({
+      entity: 'SETTINGS',
+      action: 'UPDATE',
+      payload: this.settings,
+    });
 
     if (isSupabaseConfigured) {
       safeCloud(

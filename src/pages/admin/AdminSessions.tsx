@@ -23,7 +23,7 @@ export const AdminSessions: React.FC = () => {
   const [formSelesai, setFormSelesai] = useState('07:30');
   const [formTerlambat, setFormTerlambat] = useState('06:45');
   const [formExpiry, setFormExpiry] = useState(30);
-  const [formRadius, setFormRadius] = useState(100);
+  const formRadius = 100;
 
   useEffect(() => {
     const refresh = () => {
@@ -37,6 +37,8 @@ export const AdminSessions: React.FC = () => {
   const handleToggleStatus = (session: AttendanceSession) => {
     const nextStatus = session.status === 'ACTIVE' ? 'CLOSED' : 'ACTIVE';
     dataStore.updateSession(session.id, { status: nextStatus });
+    setSessions(dataStore.getSessions());
+    setActiveSession(dataStore.getActiveSession());
   };
 
   const handleCreateSession = (e: React.FormEvent) => {
@@ -57,8 +59,10 @@ export const AdminSessions: React.FC = () => {
       status: 'ACTIVE',
     });
 
+    setSessions(dataStore.getSessions());
+    setActiveSession(dataStore.getActiveSession());
     setShowAddModal(false);
-    alert(`Sesi ${created.nama_sesi} berhasil dibuat dan diaktifkan!`);
+    alert(`Sesi "${created.nama_sesi}" berhasil dibuat dan diaktifkan!`);
   };
 
   return (
@@ -211,15 +215,15 @@ export const AdminSessions: React.FC = () => {
 
       {/* Modal Add Session */}
       {showAddModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-md w-full p-6 border border-slate-200 shadow-2xl space-y-4">
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-5 sm:p-6 my-auto border border-slate-200 shadow-2xl space-y-4 max-h-[92vh] overflow-y-auto">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <h3 className="text-base font-bold text-slate-900 font-heading">
                 Buat Sesi Absensi Baru
               </h3>
               <button
                 onClick={() => setShowAddModal(false)}
-                className="p-1.5 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
+                className="p-1.5 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -234,11 +238,11 @@ export const AdminSessions: React.FC = () => {
                   value={formNama}
                   onChange={(e) => setFormNama(e.target.value)}
                   placeholder="Contoh: Absensi Pagi - XI PPLG 3"
-                  className="w-full glass-input rounded-xl p-2.5"
+                  className="w-full glass-input rounded-xl p-2.5 text-xs"
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-slate-700 font-bold mb-1">Tanggal</label>
                   <input
@@ -246,7 +250,7 @@ export const AdminSessions: React.FC = () => {
                     required
                     value={formTanggal}
                     onChange={(e) => setFormTanggal(e.target.value)}
-                    className="w-full glass-input rounded-xl p-2.5"
+                    className="w-full glass-input rounded-xl p-2.5 text-xs"
                   />
                 </div>
                 <div>
@@ -256,12 +260,12 @@ export const AdminSessions: React.FC = () => {
                     required
                     value={formTerlambat}
                     onChange={(e) => setFormTerlambat(e.target.value)}
-                    className="w-full glass-input rounded-xl p-2.5"
+                    className="w-full glass-input rounded-xl p-2.5 text-xs"
                   />
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-slate-700 font-bold mb-1">Jam Mulai</label>
                   <input
@@ -269,7 +273,7 @@ export const AdminSessions: React.FC = () => {
                     required
                     value={formMulai}
                     onChange={(e) => setFormMulai(e.target.value)}
-                    className="w-full glass-input rounded-xl p-2.5"
+                    className="w-full glass-input rounded-xl p-2.5 text-xs"
                   />
                 </div>
                 <div>
@@ -279,12 +283,12 @@ export const AdminSessions: React.FC = () => {
                     required
                     value={formSelesai}
                     onChange={(e) => setFormSelesai(e.target.value)}
-                    className="w-full glass-input rounded-xl p-2.5"
+                    className="w-full glass-input rounded-xl p-2.5 text-xs"
                   />
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-slate-700 font-bold mb-1">Durasi QR (Detik)</label>
                   <input
@@ -294,34 +298,31 @@ export const AdminSessions: React.FC = () => {
                     required
                     value={formExpiry}
                     onChange={(e) => setFormExpiry(Number(e.target.value))}
-                    className="w-full glass-input rounded-xl p-2.5"
+                    className="w-full glass-input rounded-xl p-2.5 text-xs"
                   />
                 </div>
                 <div>
-                  <label className="block text-slate-700 font-bold mb-1">Radius Absensi (Meter)</label>
-                  <input
-                    type="number"
-                    min="20"
-                    max="1000"
-                    required
-                    value={formRadius}
-                    onChange={(e) => setFormRadius(Number(e.target.value))}
-                    className="w-full glass-input rounded-xl p-2.5"
-                  />
+                  <label className="block text-slate-700 font-bold mb-1">Status Radius GPS</label>
+                  <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-slate-700 text-xs font-semibold flex items-center justify-between">
+                    <span className="truncate">Ikuti Posisi Siswa</span>
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-bold shrink-0 ml-1">
+                      Live Dynamic
+                    </span>
+                  </div>
                 </div>
               </div>
 
-              <div className="pt-2 flex justify-end space-x-2">
+              <div className="pt-3 flex items-center justify-end space-x-2 border-t border-slate-100">
                 <button
                   type="button"
                   onClick={() => setShowAddModal(false)}
-                  className="py-2.5 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold transition-colors cursor-pointer"
+                  className="py-2.5 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold transition-colors cursor-pointer text-xs"
                 >
                   Batal
                 </button>
                 <button
                   type="submit"
-                  className="py-2.5 px-5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold shadow-md shadow-blue-600/20 transition-colors cursor-pointer"
+                  className="py-2.5 px-5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold shadow-md shadow-blue-600/20 transition-colors cursor-pointer text-xs active:scale-95"
                 >
                   Buat & Aktifkan Sesi
                 </button>

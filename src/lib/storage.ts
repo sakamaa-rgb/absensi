@@ -19,11 +19,11 @@ class SafeStorage {
         }
         keysToRemove.forEach(k => localStorage.removeItem(k));
         localStorage.setItem(key, value);
-      } catch (retryErr) {
+      } catch {
         try {
           // Try sessionStorage as second layer
           sessionStorage.setItem(key, value);
-        } catch (sessionErr) {
+        } catch {
           this.memoryFallback.set(key, value);
         }
       }

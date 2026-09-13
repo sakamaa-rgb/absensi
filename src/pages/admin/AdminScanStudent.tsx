@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Html5Qrcode } from 'html5-qrcode';
+import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 import confetti from 'canvas-confetti';
 import { dataStore } from '../../services/dataStore';
 import type { Student, AttendanceStatus, AttendanceRecord } from '../../types/database';
@@ -14,9 +14,11 @@ import {
   Volume2, 
   Users,
   MapPin,
-  X,
   FlipHorizontal2,
-  RefreshCw
+  RefreshCw,
+  Upload,
+  ExternalLink,
+  RotateCcw
 } from 'lucide-react';
 
 export const AdminScanStudent: React.FC = () => {
@@ -24,6 +26,74 @@ export const AdminScanStudent: React.FC = () => {
   const [selectedStatus, setSelectedStatus] = useState<AttendanceStatus>('HADIR');
   const [isMirrored, setIsMirrored] = useState(false);
   const [cameraFacing, setCameraFacing] = useState<'environment' | 'user'>('environment');
+  const [scannerError, setScannerError] = useState<{
+    title: string;
+    message: string;
+    isHttpsRequired?: boolean;
+  } | null>(null);
+  const [isFileScanning, setIsFileScanning] = useState(false);
+
+  // Helper to load recent scans directly from persistent dataStore so reload never loses the list
+  const getTodayScans = (): Array<{
+    student: Student;
+    status: AttendanceStatus;
+    time: string;
+    record?: AttendanceRecord;
+  }> => {
+    const today = new Date().toISOString().split('T')[0];
+    const allAtt = dataStore.getAttendance()
+      .filter(a => a.tanggal === today)
+      .sort((a, b) => {
+        const tA = a.created_at || a.waktu || '';
+        const tB = b.created_at || b.waktu || '';
+        return tB.localeCompare(tA);
+      });
+
+    const results: Array<{
+      student: Student;
+      status: AttendanceStatus;
+      time: string;
+      record?: AttendanceRecord;
+    }> = [];
+
+    for (const att of allAtt.slice(0, 20)) {
+      const std = att.student || dataStore.getStudentById(att.student_id);
+      if (std) {
+        results.push({
+          student: std,
+          status: att.status,
+          time: att.waktu ? att.waktu.substring(0, 5) : 'Hari Ini',
+          record: att,
+        });
+      }
+    }
+    return results;
+  };
+
+  const getInitialLastScannedResult = () => {
+    const today = new Date().toISOString().split('T')[0];
+    const todayAttendance = dataStore.getAttendance()
+      .filter(a => a.tanggal === today)
+      .sort((a, b) => {
+        const tA = a.created_at || a.waktu || '';
+        const tB = b.created_at || b.waktu || '';
+        return tB.localeCompare(tA);
+      });
+
+    if (todayAttendance.length > 0) {
+      const latest = todayAttendance[0];
+      const student = latest.student || dataStore.getStudentById(latest.student_id);
+      if (student) {
+        return {
+          success: true,
+          message: `Presensi Terakhir Tersimpan: ${student.nama} (#${student.nomor_absen}) tercatat ${latest.status} pukul ${latest.waktu || '-'} WIB`,
+          student,
+          record: latest,
+        };
+      }
+    }
+    return null;
+  };
 
   const [lastScannedResult, setLastScannedResult] = useState<{
     success: boolean;
@@ -31,45 +101,56 @@ export const AdminScanStudent: React.FC = () => {
     student?: Student;
     record?: AttendanceRecord;
     isSuspicious?: boolean;
-  } | null>(null);
+  } | null>(() => getInitialLastScannedResult());
 
   const [selectedLocationRecord, setSelectedLocationRecord] = useState<{
     record: AttendanceRecord;
     student: Student;
   } | null>(null);
 
-  const [liveCoords, setLiveCoords] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [liveCoords, setLiveCoords] = useState<{ latitude: number; longitude: number } | null>(() => {
+    const settings = dataStore.getSettings();
+    return {
+      latitude: settings.latitude || -6.6025000,
+      longitude: settings.longitude || 106.7580556,
+    };
+  });
 
   const [searchQuery, setSearchQuery] = useState('');
-  const [students] = useState<Student[]>(() => dataStore.getStudents());
+  const [students, setStudents] = useState<Student[]>(() => dataStore.getStudents());
   const [recentScans, setRecentScans] = useState<Array<{ 
     student: Student; 
     status: AttendanceStatus; 
     time: string;
     record?: AttendanceRecord;
-  }>>([]);
-  const [attendanceCount, setAttendanceCount] = useState(0);
+  }>>(() => getTodayScans());
+  const [attendanceCount, setAttendanceCount] = useState(() => {
+    const today = new Date().toISOString().split('T')[0];
+    return dataStore.getAttendance().filter(a => a.tanggal === today).length;
+  });
   const [isSuccessFlash, setIsSuccessFlash] = useState(false);
 
   const qrScannerRef = useRef<Html5Qrcode | null>(null);
+  const fileScannerRef = useRef<Html5Qrcode | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const scannerContainerId = 'admin-qr-reader';
   const lastScannedCodeRef = useRef<string>('');
   const lastScanTimestampRef = useRef<number>(0);
 
-  // Sync attendance count
+  // Sync attendance count, students, and recent scans on external dataStore changes or reload
   useEffect(() => {
-    const updateCount = () => {
+    const refreshData = () => {
       const today = new Date().toISOString().split('T')[0];
-      const count = dataStore.getAttendance().filter(a => a.tanggal === today && (a.status === 'HADIR' || a.status === 'TERLAMBAT')).length;
-      setAttendanceCount(count);
+      setStudents(dataStore.getStudents());
+      setAttendanceCount(dataStore.getAttendance().filter(a => a.tanggal === today).length);
+      setRecentScans(getTodayScans());
     };
-    updateCount();
-    return dataStore.subscribe(updateCount);
+    return dataStore.subscribe(refreshData);
   }, []);
 
-  // Detect live GPS location or default to SMKN 1 Ciomas
+  // Detect live GPS location or keep default to SMKN 1 Ciomas
   useEffect(() => {
-    if (navigator.geolocation) {
+    if (typeof navigator !== 'undefined' && navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         (pos) => {
           setLiveCoords({
@@ -78,20 +159,10 @@ export const AdminScanStudent: React.FC = () => {
           });
         },
         () => {
-          const settings = dataStore.getSettings();
-          setLiveCoords({
-            latitude: settings.latitude || -6.6025000,
-            longitude: settings.longitude || 106.7580556,
-          });
+          // Keep initial fallback coords
         },
         { enableHighAccuracy: true, timeout: 6000 }
       );
-    } else {
-      const settings = dataStore.getSettings();
-      setLiveCoords({
-        latitude: settings.latitude || -6.6025000,
-        longitude: settings.longitude || 106.7580556,
-      });
     }
   }, []);
 
@@ -131,34 +202,95 @@ export const AdminScanStudent: React.FC = () => {
   useEffect(() => {
     return () => {
       void stopScanner();
+      if (fileScannerRef.current) {
+        try {
+          fileScannerRef.current.clear();
+        } catch {
+          // ignore
+        }
+      }
     };
   }, []);
 
   const startScanner = async (facing: 'environment' | 'user' = cameraFacing) => {
     setLastScannedResult(null);
+    setScannerError(null);
     setScannerActive(true);
 
     try {
       if (!qrScannerRef.current) {
-        qrScannerRef.current = new Html5Qrcode(scannerContainerId);
+        qrScannerRef.current = new Html5Qrcode(scannerContainerId, {
+          formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
+          verbose: false,
+          experimentalFeatures: {
+            useBarCodeDetectorIfSupported: true,
+          },
+        });
       }
 
       await qrScannerRef.current.start(
         { facingMode: facing },
         {
-          fps: 15,
-          qrbox: { width: 250, height: 250 },
+          fps: 20,
           aspectRatio: 1.0,
+          qrbox: (viewfinderWidth: number, viewfinderHeight: number) => {
+            const minEdge = Math.min(viewfinderWidth, viewfinderHeight);
+            const qrEdge = Math.max(Math.floor(minEdge * 0.85), 240);
+            return { width: qrEdge, height: qrEdge };
+          },
         },
         async (decodedText) => {
           handleStudentScanned(decodedText);
         },
         () => {}
       );
-    } catch (err) {
+    } catch (err: unknown) {
       console.error('Admin scanner start error:', err);
       setScannerActive(false);
-      alert('Gagal membuka kamera. Pastikan izin kamera telah diberikan.');
+      const isHttp = typeof window !== 'undefined' && window.location.protocol === 'http:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
+      setScannerError({
+        title: 'Kamera Tidak Dapat Dibuka',
+        message: isHttp
+          ? 'Browser HP (Safari / Chrome) memblokir video kamera langsung jika diakses via HTTP biasa tanpa SSL.'
+          : 'Izin kamera belum aktif atau sedang digunakan aplikasi lain. Pastikan izin kamera telah diberikan di browser.',
+        isHttpsRequired: isHttp,
+      });
+    }
+  };
+
+  const handleFileScan = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsFileScanning(true);
+    setScannerError(null);
+    setLastScannedResult(null);
+
+    try {
+      if (!fileScannerRef.current) {
+        fileScannerRef.current = new Html5Qrcode('admin-qr-file-dummy', {
+          formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
+          verbose: false,
+          experimentalFeatures: {
+            useBarCodeDetectorIfSupported: true,
+          },
+        });
+      }
+      const decoded = await fileScannerRef.current.scanFile(file, false);
+      if (decoded) {
+        handleStudentScanned(decoded);
+      }
+    } catch (err) {
+      console.warn('QR file scan failed:', err);
+      setLastScannedResult({
+        success: false,
+        message: 'QR Code tidak terdeteksi pada foto/gambar. Pastikan kartu QR berada di tengah dan pencahayaan terang.',
+      });
+    } finally {
+      setIsFileScanning(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
     }
   };
 
@@ -210,7 +342,7 @@ export const AdminScanStudent: React.FC = () => {
         record: result.record,
       };
 
-      setRecentScans(prev => [newScanItem, ...prev.slice(0, 14)]);
+      setRecentScans(prev => [newScanItem, ...prev.filter(p => p.student.id !== result.student!.id).slice(0, 19)]);
     }
   };
 
@@ -227,7 +359,7 @@ export const AdminScanStudent: React.FC = () => {
         time: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
         record: result.record,
       };
-      setRecentScans(prev => [newScanItem, ...prev.slice(0, 14)]);
+      setRecentScans(prev => [newScanItem, ...prev.filter(p => p.student.id !== student.id).slice(0, 19)]);
     }
   };
 
@@ -269,6 +401,28 @@ export const AdminScanStudent: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Mobile HTTP to HTTPS Notice Banner */}
+      {typeof window !== 'undefined' && window.location.protocol === 'http:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1' && (
+        <div className="p-3.5 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5 shadow-xs">
+          <div className="flex items-center space-x-2 text-xs">
+            <span className="text-base shrink-0">📱</span>
+            <p>
+              <strong className="font-bold">Akses dari HP (Safari/Chrome):</strong> Live camera browser memerlukan koneksi HTTPS. Klik tombol untuk pindah ke HTTPS atau gunakan tombol <strong>Foto QR</strong>.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              window.location.href = window.location.href.replace(/^http:/, 'https:');
+            }}
+            className="self-end sm:self-auto shrink-0 px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs shadow-xs transition-colors cursor-pointer flex items-center space-x-1"
+          >
+            <ExternalLink className="w-3.5 h-3.5" />
+            <span>Buka via HTTPS</span>
+          </button>
+        </div>
+      )}
 
       {/* Status Selection Pill Bar */}
       <div className="glass-card rounded-3xl p-5 border border-slate-200/90 shadow-sm space-y-2.5 bg-white/95">
@@ -414,28 +568,130 @@ export const AdminScanStudent: React.FC = () => {
               </div>
             )}
 
-            {!scannerActive && (
+            {/* Hidden Input for direct photo capture from native mobile camera or file upload */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              className="hidden"
+              onChange={handleFileScan}
+            />
+            <div id="admin-qr-file-dummy" className="hidden" />
 
-              <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center space-y-4 bg-white/95">
-                <div className="w-16 h-16 rounded-3xl bg-purple-50 border border-purple-200 flex items-center justify-center text-purple-700 shadow-xs">
-                  <ScanLine className="w-8 h-8" />
+            {/* File Scanning Loader */}
+            {isFileScanning && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center space-y-3 bg-white/98 z-30">
+                <div className="w-14 h-14 rounded-2xl bg-blue-50 border border-blue-200 flex items-center justify-center text-blue-600 shadow-sm animate-pulse">
+                  <RefreshCw className="w-7 h-7 animate-spin" />
                 </div>
-                <div>
-                  <h3 className="text-base font-bold text-slate-900 font-heading">
-                    Kamera Siap Scan Siswa
-                  </h3>
-                  <p className="text-xs text-slate-500 mt-1 max-w-xs">
-                    Klik untuk membuka kamera dan scan QR kartu siswa satu per satu secara berurutan.
-                  </p>
-                </div>
-                <button
-                  onClick={() => { void startScanner(); }}
-                  className="py-3 px-6 rounded-2xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow-md shadow-blue-600/25 flex items-center space-x-2 transition-all cursor-pointer"
-                >
-                  <Camera className="w-4 h-4" />
-                  <span>Aktifkan Scanner Sekarang</span>
-                </button>
+                <h3 className="text-sm font-bold text-slate-900 font-heading">
+                  Memindai Foto QR Siswa...
+                </h3>
+                <p className="text-xs text-slate-500 max-w-xs">
+                  Sedang mengekstrak kode QR dari foto kartu siswa.
+                </p>
               </div>
+            )}
+
+            {!scannerActive && !isFileScanning && (
+              <>
+                {scannerError ? (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center p-5 text-center space-y-3 bg-white/98 z-20 overflow-y-auto">
+                    <div className="w-12 h-12 rounded-2xl bg-rose-50 border border-rose-200 flex items-center justify-center text-rose-600 shadow-xs shrink-0">
+                      <AlertCircle className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-bold text-rose-900 font-heading">
+                        {scannerError.title}
+                      </h3>
+                      <p className="text-[11px] text-slate-600 mt-1 max-w-xs leading-relaxed">
+                        {scannerError.message}
+                      </p>
+                    </div>
+
+                    <div className="flex flex-col w-full max-w-xs space-y-2 pt-1">
+                      {scannerError.isHttpsRequired && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const httpsUrl = window.location.href.replace(/^http:/, 'https:');
+                            window.location.href = httpsUrl;
+                          }}
+                          className="w-full py-2.5 px-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs flex items-center justify-center space-x-1.5 shadow-md shadow-blue-600/20 transition-all cursor-pointer"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                          <span>Buka via HTTPS Aman</span>
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="w-full py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center justify-center space-x-1.5 shadow-md shadow-emerald-600/20 transition-all cursor-pointer"
+                      >
+                        <Camera className="w-3.5 h-3.5" />
+                        <span>Ambil Foto QR (Kamera HP Langsung)</span>
+                      </button>
+
+                      <div className="flex items-center space-x-2 w-full pt-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setScannerError(null);
+                            void startScanner();
+                          }}
+                          className="flex-1 py-2 px-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-[11px] flex items-center justify-center space-x-1 transition-colors cursor-pointer"
+                        >
+                          <RotateCcw className="w-3 h-3" />
+                          <span>Coba Lagi</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setScannerError(null)}
+                          className="py-2 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold text-[11px] transition-colors cursor-pointer"
+                        >
+                          Tutup
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center space-y-4 bg-white/95">
+                    <div className="w-16 h-16 rounded-3xl bg-purple-50 border border-purple-200 flex items-center justify-center text-purple-700 shadow-xs">
+                      <ScanLine className="w-8 h-8" />
+                    </div>
+                    <div>
+                      <h3 className="text-base font-bold text-slate-900 font-heading">
+                        Kamera Siap Scan Siswa
+                      </h3>
+                      <p className="text-xs text-slate-500 mt-1 max-w-xs leading-relaxed">
+                        Buka live camera untuk scan terus-menerus, atau ambil foto kartu QR siswa langsung dari kamera HP.
+                      </p>
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row items-center gap-2.5 w-full max-w-xs">
+                      <button
+                        type="button"
+                        onClick={() => { void startScanner(); }}
+                        className="w-full sm:w-auto flex-1 py-2.5 px-4 rounded-2xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow-md shadow-blue-600/25 flex items-center justify-center space-x-2 transition-all cursor-pointer touch-press"
+                      >
+                        <Camera className="w-4 h-4" />
+                        <span>Aktifkan Scanner</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="w-full sm:w-auto py-2.5 px-3.5 rounded-2xl bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 font-bold text-xs flex items-center justify-center space-x-1.5 transition-all cursor-pointer touch-press"
+                        title="Ambil foto atau pilih gambar kartu QR dari kamera HP"
+                      >
+                        <Upload className="w-4 h-4 text-slate-600" />
+                        <span>Foto QR</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
           </div>
 

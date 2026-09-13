@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/useAuth';
 import { AnimatedBackground } from '../components/common/AnimatedBackground';
+import { RealtimeConnectionBadge } from '../components/common/RealtimeConnectionBadge';
 import { dataStore } from '../services/dataStore';
 import { 
   Home, 
@@ -58,8 +59,11 @@ export const StudentLayout: React.FC = () => {
     if (mainContentRef.current) {
       mainContentRef.current.scrollTo({ top: 0, behavior: 'smooth' });
     }
-    setScrollProgress(0);
-    setShowScrollTop(false);
+    const raf = requestAnimationFrame(() => {
+      setScrollProgress(0);
+      setShowScrollTop(false);
+    });
+    return () => cancelAnimationFrame(raf);
   }, [location.pathname]);
 
   const navItems = [
@@ -89,6 +93,11 @@ export const StudentLayout: React.FC = () => {
             </div>
             <p className="text-xs text-slate-500 font-medium">SMKN 1 Ciomas</p>
           </div>
+        </div>
+
+        {/* Realtime Live Status Badge */}
+        <div className="mb-4 px-1">
+          <RealtimeConnectionBadge className="w-full justify-between" />
         </div>
 
         {/* Student Profile Pill */}
@@ -275,6 +284,7 @@ export const StudentLayout: React.FC = () => {
           </div>
 
           <div className="flex items-center space-x-2">
+            <RealtimeConnectionBadge showText={false} />
             {student?.foto_url && (
               <img src={student.foto_url} alt={student.nama} className="w-6 h-6 rounded-lg object-cover border border-slate-200 shadow-2xs" />
             )}

@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/useAuth';
 import { AnimatedBackground } from '../components/common/AnimatedBackground';
+import { RealtimeConnectionBadge } from '../components/common/RealtimeConnectionBadge';
 import { 
   LayoutDashboard, 
   ScanLine, 
@@ -52,8 +53,11 @@ export const AdminLayout: React.FC = () => {
     if (mainContentRef.current) {
       mainContentRef.current.scrollTo({ top: 0, behavior: 'smooth' });
     }
-    setScrollProgress(0);
-    setShowScrollTop(false);
+    const raf = requestAnimationFrame(() => {
+      setScrollProgress(0);
+      setShowScrollTop(false);
+    });
+    return () => cancelAnimationFrame(raf);
   }, [location.pathname]);
 
   const navItems = [
@@ -87,6 +91,11 @@ export const AdminLayout: React.FC = () => {
             </div>
             <p className="text-xs text-slate-500 font-medium">SMKN 1 Ciomas</p>
           </div>
+        </div>
+
+        {/* Realtime Live Status Badge */}
+        <div className="mb-4 px-1">
+          <RealtimeConnectionBadge className="w-full justify-between" />
         </div>
 
         {/* Navigation */}
@@ -228,25 +237,28 @@ export const AdminLayout: React.FC = () => {
         )}
 
         {/* Mobile Header Bar with Hamburger */}
-        <header className="lg:hidden sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200 px-4 py-3 flex items-center justify-between shadow-xs relative">
-          <div className="flex items-center space-x-3">
+        <header className="lg:hidden sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200 px-3 sm:px-4 py-2.5 sm:py-3 flex items-center justify-between shadow-xs relative gap-2">
+          <div className="flex items-center space-x-2 sm:space-x-3 min-w-0">
             <button
               onClick={() => setMobileMenuOpen(true)}
-              className="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors cursor-pointer touch-press"
+              className="p-1.5 sm:p-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors cursor-pointer touch-press shrink-0"
               title="Buka Menu"
             >
               <Menu className="w-5 h-5" />
             </button>
-            <div className="flex items-center space-x-2">
-              <img src="/logo-pplg3.png" alt="Logo XI PPLG 3" className="w-7 h-7 object-contain rounded-lg" />
-              <span className="font-extrabold text-sm text-slate-900 font-heading">PPLG 3 ADMIN</span>
+            <div className="flex items-center space-x-2 min-w-0">
+              <img src="/logo-pplg3.png" alt="Logo XI PPLG 3" className="w-7 h-7 object-contain rounded-lg shrink-0" />
+              <span className="font-extrabold text-xs sm:text-sm text-slate-900 font-heading truncate">
+                PPLG 3 ADMIN
+              </span>
             </div>
           </div>
 
-          <div className="flex items-center space-x-2">
-            <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-              <Radio className="w-3 h-3 mr-1 animate-pulse text-emerald-600" />
-              Sesi Aktif
+          <div className="flex items-center space-x-1.5 sm:space-x-2 shrink-0">
+            <RealtimeConnectionBadge showText={false} />
+            <span className="inline-flex items-center px-2 py-1 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 whitespace-nowrap">
+              <Radio className="w-2.5 h-2.5 sm:w-3 sm:h-3 mr-1 animate-pulse text-emerald-600 shrink-0" />
+              <span>Sesi Aktif</span>
             </span>
           </div>
 
