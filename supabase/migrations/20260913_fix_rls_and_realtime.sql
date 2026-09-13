@@ -8,6 +8,7 @@
 -- Memberikan izin lengkap untuk operasi anon (aplikasi absensi siswa & admin kelas)
 
 -- Tabel: students
+ALTER TABLE IF EXISTS public.students ADD COLUMN IF NOT EXISTS foto_url TEXT;
 ALTER TABLE IF EXISTS public.students ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Allow all operations for anon on students" ON public.students;
 CREATE POLICY "Allow all operations for anon on students"

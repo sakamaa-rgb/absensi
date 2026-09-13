@@ -337,23 +337,22 @@ class DataStore {
       if (!studentErr && supaStudents) {
         if (supaStudents.length === 0 && this.students.length > 0) {
           // Push initial local students to cloud if cloud is totally empty
-          for (const localSt of this.students) {
+          const pushPayload = this.students.map(localSt => {
             const uuid = (localSt.id && localSt.id.length === 36) ? localSt.id : generateUUID();
             localSt.id = uuid;
-            await safeCloud(
-              supabase.from('students').upsert({
-                id: uuid,
-                nama: localSt.nama,
-                nis: localSt.nis,
-                nisn: localSt.nisn,
-                nomor_absen: Number(localSt.nomor_absen) || 1,
-                email: localSt.email,
-                kelas: localSt.kelas || 'XI PPLG 3',
-                status: localSt.status || 'active',
-                foto_url: localSt.foto_url || null,
-              })
-            );
-          }
+            return {
+              id: uuid,
+              nama: localSt.nama,
+              nis: localSt.nis,
+              nisn: localSt.nisn,
+              nomor_absen: Number(localSt.nomor_absen) || 1,
+              email: localSt.email,
+              kelas: localSt.kelas || 'XI PPLG 3',
+              status: localSt.status || 'active',
+              foto_url: localSt.foto_url || null,
+            };
+          });
+          await this.safeUpsertStudents(pushPayload);
           const { data: refreshedSupa } = await supabase
             .from('students')
             .select('*')
@@ -545,11 +544,33 @@ class DataStore {
         foto_url: st.foto_url || null,
         created_at: st.created_at,
       }));
-      safeCloud(supabase.from('students').upsert(pushPayload, { onConflict: 'nisn' }));
+      void this.safeUpsertStudents(pushPayload);
     }
 
     this.students = [...mappedSupa, ...localUnsynced].sort((a, b) => a.nomor_absen - b.nomor_absen);
     this.saveToStorage(STORAGE_KEYS.STUDENTS, this.students);
+  }
+
+  /**
+   * Resilient student upsert to Supabase: automatically retries without optional columns (e.g. foto_url)
+   * if the Postgres table schema doesn't have them yet.
+   */
+  private async safeUpsertStudents(studentsPayload: any[]): Promise<{ error: any }> {
+    if (!isSupabaseConfigured || !studentsPayload || studentsPayload.length === 0) {
+      return { error: null };
+    }
+
+    const { error } = await supabase.from('students').upsert(studentsPayload, { onConflict: 'nisn' });
+    if (!error) return { error: null };
+
+    // Fallback: if database schema doesn't have 'foto_url' column yet, retry omitting it so sync always succeeds
+    if (error && error.message && (error.message.includes('foto_url') || error.message.includes('column'))) {
+      const cleanPayload = studentsPayload.map(({ foto_url: _foto_url, ...rest }) => rest);
+      const retry = await supabase.from('students').upsert(cleanPayload, { onConflict: 'nisn' });
+      return { error: retry.error };
+    }
+
+    return { error };
   }
 
   public async pushAllLocalDataToSupabase(): Promise<{
@@ -582,7 +603,8 @@ class DataStore {
             created_at: st.created_at || new Date().toISOString(),
           };
         });
-        const { error: stErr } = await supabase.from('students').upsert(payload, { onConflict: 'nisn' });
+
+        const { error: stErr } = await this.safeUpsertStudents(payload);
         if (stErr) {
           return { success: false, error: `Gagal upload ke tabel students: ${stErr.message}`, studentsPushed: 0, sessionsPushed: 0 };
         }
@@ -974,9 +996,7 @@ class DataStore {
         created_at: st.created_at,
       }));
 
-      safeCloud(
-        supabase.from('students').upsert(supaPayload, { onConflict: 'nisn' })
-      );
+      void this.safeUpsertStudents(supaPayload);
     }
 
     return added;
